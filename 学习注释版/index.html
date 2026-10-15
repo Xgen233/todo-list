@@ -1,0 +1,1872 @@
+<!DOCTYPE html>
+<!-- ============================================================
+  index.html —— 渲染进程（界面 + 业务逻辑）
+  ============================================================
+  这个文件同时被主窗口和桌贴窗口加载，靠 URL 参数 ?widget=1 区分：
+    · 主窗口   → 加载 index.html（无参数）
+    · 桌贴窗口 → 加载 index.html?widget=1（代码里 IS_WIDGET = true）
+
+  文件分三块：
+    1. <style>   CSS：CSS 变量主题、玻璃拟态、动画、主界面/桌贴/设置三套样式
+    2. <body>    DOM：主界面 + 桌贴 + 设置面板三块结构
+    3. <script>  JS：数据模型、增删改查、时间识别、分类、提醒、云端同步
+
+  渲染进程运行在浏览器环境，能用 DOM / localStorage，但摸不到 Node。
+  想调主进程能力（发通知、开桌贴窗口等）只能通过 window.api（见 preload.js）。
+-->
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>待办清单</title>
+<style>
+  /* ============ 主题（CSS 变量） ============
+     把颜色、透明度、模糊度都定义成 CSS 变量（--开头），
+     浅色/深色两套分别写，切主题时只需改 html 的 data-theme 属性，
+     所有用到变量的地方自动跟着变。这就是「换肤」的标准做法。 */
+  :root {
+    color-scheme: light;   /* 告诉浏览器「本页是浅色」，原生控件默认浅色 */
+    --bg-tint: rgba(245, 246, 250, 0.55);   /* 页面底色 */
+    --text: #1f2430;                       /* 主文字 */
+    --text-muted: #8a90a2;                 /* 次要文字 */
+    --accent: #5b6cff;                     /* 强调色（蓝紫） */
+    --accent-2: #8a5bff;                   /* 强调色 2（渐变用） */
+    --accent-soft: rgba(91, 108, 255, 0.16);  /* 强调色淡背景 */
+    --line: rgba(31, 36, 48, 0.14);        /* 分隔线/描边 */
+    --input-bg: rgba(255, 255, 255, 0.6);  /* 输入框背景 */
+    --hover: rgba(255, 255, 255, 0.55);    /* 悬停背景 */
+    --danger: #ff5c5c;                     /* 危险/删除色 */
+    --danger-soft: rgba(255, 92, 92, 0.16);
+    --glass-rgb: 255, 255, 255;            /* 玻璃背景的 RGB 三通道 */
+    --glass-alpha: 0.42;                   /* 玻璃背景透明度（设置面板可调） */
+    --glass-bg: rgba(var(--glass-rgb), var(--glass-alpha));  /* 组合成完整颜色 */
+    --app-blur: 10px;                      /* 磨砂模糊度（可调） */
+    --glass-border: rgba(255, 255, 255, 0.7);
+    --glass-highlight: rgba(255, 255, 255, 0.85);
+    --glass-shadow: 0 24px 60px -20px rgba(60, 70, 120, 0.35);
+    --blob-1: rgba(99, 102, 241, 0.55);    /* 背景光斑颜色（4 个） */
+    --blob-2: rgba(168, 85, 247, 0.45);
+    --blob-3: rgba(34, 211, 238, 0.4);
+    --blob-4: rgba(244, 63, 94, 0.32);
+  }
+
+  /* 深色主题：只覆盖要变的变量，其余沿用 :root 的定义 */
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg-tint: rgba(16, 18, 26, 0.55);
+    --text: #e8eaf1;
+    --text-muted: #9aa1b8;
+    --accent: #7c8bff;
+    --accent-2: #b07bff;
+    --accent-soft: rgba(124, 139, 255, 0.22);
+    --line: rgba(255, 255, 255, 0.12);
+    --input-bg: rgba(255, 255, 255, 0.07);
+    --hover: rgba(255, 255, 255, 0.08);
+    --danger: #ff6b6b;
+    --danger-soft: rgba(255, 107, 107, 0.2);
+    --glass-rgb: 26, 28, 38;
+    --glass-bg: rgba(var(--glass-rgb), var(--glass-alpha));
+    --glass-border: rgba(255, 255, 255, 0.14);
+    --glass-highlight: rgba(255, 255, 255, 0.14);
+    --glass-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.6);
+    --blob-1: rgba(99, 102, 241, 0.5);
+    --blob-2: rgba(168, 85, 247, 0.42);
+    --blob-3: rgba(34, 211, 238, 0.38);
+    --blob-4: rgba(244, 63, 94, 0.3);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }   /* 统一盒模型，去默认边距 */
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", "Helvetica Neue", sans-serif;  /* 系统字体栈，中文回退到苹方/雅黑 */
+    background: var(--bg-tint);
+    color: var(--text);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 40px 20px;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;   /* 字体抗锯齿（更清晰） */
+    transition: background .3s ease;       /* 切主题时背景渐变过渡 */
+  }
+
+  /* ---------- 流光背景 ----------
+     4 个彩色模糊圆点（.blob）慢慢漂移，做出动态背景。
+     pointer-events:none 让它不挡鼠标点击；z-index:0 在最底层。 */
+  .bg { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+  .blob { position: absolute; border-radius: 50%; filter: blur(60px); }   /* blur 大半径=光斑 */
+  .b1 { width: 46vw; height: 46vw; background: radial-gradient(circle, var(--blob-1), transparent 70%); top: -12vw; left: -8vw; animation: drift1 26s ease-in-out infinite alternate; }
+  .b2 { width: 42vw; height: 42vw; background: radial-gradient(circle, var(--blob-2), transparent 70%); bottom: -14vw; right: -8vw; animation: drift2 32s ease-in-out infinite alternate; }
+  .b3 { width: 34vw; height: 34vw; background: radial-gradient(circle, var(--blob-3), transparent 70%); top: 30%; left: 50%; animation: drift3 22s ease-in-out infinite alternate; }
+  .b4 { width: 24vw; height: 24vw; background: radial-gradient(circle, var(--blob-4), transparent 70%); bottom: 16%; left: 10%; animation: drift4 28s ease-in-out infinite alternate; }
+  /* 每个光斑缓慢平移 + 缩放，alternate 让动画往返循环 */
+  @keyframes drift1 { to { transform: translate(9vw, 7vw) scale(1.15); } }
+  @keyframes drift2 { to { transform: translate(-8vw, -8vw) scale(1.1); } }
+  @keyframes drift3 { to { transform: translate(-10vw, 9vw) scale(0.92); } }
+  @keyframes drift4 { to { transform: translate(7vw, -9vw) scale(1.2); } }
+
+  /* ---------- 自定义标题栏（无边框窗口） ----------
+     因为主窗口 frame:false 没有系统标题栏，这里用 CSS 自己画一个。
+     关键：-webkit-app-region: drag 让这块区域「可拖动窗口」，
+     而按钮要 -webkit-app-region: no-drag 才能正常点击。 */
+  .titlebar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 40px;
+    display: flex;
+    justify-content: flex-end;   /* 三个按钮靠右 */
+    align-items: stretch;
+    z-index: 20;
+    -webkit-app-region: drag;    /* ★ 整条可拖动 */
+  }
+  .tb-btn {
+    -webkit-app-region: no-drag; /* ★ 按钮本身不可拖动（否则点不到） */
+    width: 46px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .tb-btn:hover { background: var(--hover); color: var(--text); }
+  .tb-close:hover { background: #e81123; color: #fff; }   /* 关闭按钮悬停变红（Windows 风格） */
+
+  /* ---------- 灵动岛提醒 ----------
+     顶部居中的小黑条，滑入滑出。默认 transform 把它移出屏幕上方，
+     加 .show 类就滑下来。transition 用 cubic-bezier 做回弹效果。 */
+  .island {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translate(-50%, -130%);   /* 初始在屏幕外（往上） */
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 16px 9px 12px;
+    border-radius: 999px;   /* 胶囊形状 */
+    background: rgba(10, 11, 16, 0.92);
+    color: #fff;
+    font-size: 13px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+    transition: transform .5s cubic-bezier(.22, 1.4, .36, 1);  /* 回弹曲线 */
+    pointer-events: none;
+    max-width: calc(100vw - 40px);
+  }
+  .island.show { transform: translate(-50%, 10px); }   /* 滑入到顶部下方 10px */
+  .island-dot {   /* 左边的「摄像头」小黑点，纯装饰 */
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #000;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+    flex-shrink: 0;
+  }
+  .island-body { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .island-body .ic { font-size: 15px; flex-shrink: 0; }
+  .island-body .txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }  /* 超长省略号 */
+
+  /* 主容器：玻璃拟态卡片 */
+  .app {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 540px;
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: blur(var(--app-blur)) saturate(140%);   /* ★ 背景模糊（毛玻璃核心） */
+    backdrop-filter: blur(var(--app-blur)) saturate(140%);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);  /* 外阴影 + 内高光 */
+    padding: 30px 30px 26px;
+    animation: rise .55s cubic-bezier(.22, 1, .36, 1);   /* 载入时上浮淡入 */
+    transition: background .3s ease, border-color .3s ease;
+  }
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 22px; }
+  .header .date { font-size: 13px; color: var(--text-muted); letter-spacing: .02em; margin-bottom: 6px; }
+  .header h1 { font-size: 30px; font-weight: 700; letter-spacing: -.01em; }
+  .header h1 .dot { color: var(--accent); }   /* 标题后面的小圆点，强调色 */
+  .header-actions { display: flex; gap: 8px; }
+
+  /* 图标按钮（设置/主题/桌贴三个圆角方块） */
+  .icon-btn {
+    border: 1px solid var(--line);
+    background: var(--input-bg);
+    width: 40px; height: 40px;
+    border-radius: 12px;
+    font-size: 18px;
+    cursor: pointer;
+    transition: background .18s, transform .08s;
+    display: grid;
+    place-items: center;   /* 居中内容 */
+  }
+  .icon-btn:hover { background: var(--hover); }
+  .icon-btn:active { transform: scale(.94); }   /* 按下缩小，有「按下去」手感 */
+  .icon-btn svg { width: 18px; height: 18px; }
+
+  /* 完成度进度条 */
+  .progress { height: 5px; border-radius: 999px; background: var(--hover); overflow: hidden; margin-bottom: 16px; }
+  .progress-fill {
+    height: 100%;
+    width: 0;   /* 初始 0，JS 根据完成比例改 width */
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));   /* 渐变填充 */
+    transition: width .5s cubic-bezier(.22, 1, .36, 1);
+  }
+
+  .add-row { display: flex; gap: 10px; margin-bottom: 10px; }
+  .add-row input {
+    flex: 1;   /* 输入框占满剩余宽度 */
+    border: 1.5px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 16px;
+    font-size: 15px;
+    color: var(--text);
+    background: var(--input-bg);
+    outline: none;
+    transition: border-color .18s, box-shadow .18s;
+  }
+  .add-row input::placeholder { color: var(--text-muted); }
+  .add-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }  /* 聚焦高亮光圈 */
+
+  .add-btn {
+    border: none;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));   /* 对角渐变按钮 */
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 0 22px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: filter .18s, transform .08s;
+  }
+  .add-btn:hover { filter: brightness(1.06); }
+  .add-btn:active { transform: scale(.96); }
+
+  /* 选项区（优先级/分类下拉 + 日期/时间输入） */
+  .opts { display: flex; gap: 8px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
+  .opts select, .opts input[type="date"], .opts input[type="datetime-local"] {
+    border: 1px solid var(--line);
+    background: var(--input-bg);
+    color: var(--text);
+    font-size: 13px;
+    padding: 7px 10px;
+    border-radius: 10px;
+    outline: none;
+    transition: border-color .18s;
+  }
+  .opts select:focus, .opts input[type="date"]:focus, .opts input[type="datetime-local"]:focus { border-color: var(--accent); }
+  .opts .opt-label { font-size: 13px; color: var(--text-muted); }
+  /* 深色模式下 select 的展开项也要深色（展开后是 option 元素） */
+  html[data-theme="dark"] select option { background: #1e2029; color: #e8eaf1; }
+
+  /* 三个筛选标签：全部/未完成/已完成 */
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  .tab {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 14px;
+    font-weight: 500;
+    padding: 7px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .18s, color .18s;
+  }
+  .tab:hover { background: var(--hover); }
+  .tab.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }   /* 激活态 */
+
+  /* ---------- 分类标签 / 筛选 ---------- */
+  .cats { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+  .cat-chip {   /* 分类筛选胶囊 */
+    border: 1px solid var(--line);
+    background: var(--input-bg);
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .18s, color .18s, border-color .18s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cat-chip:hover { background: var(--hover); }
+  .cat-chip.active { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+  .cat-chip .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex-shrink: 0; }  /* currentColor 跟随文字颜色 */
+
+  .tag {   /* 列表项上的分类彩色小标签 */
+    flex-shrink: 0;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: #fff;
+    font-weight: 600;
+    letter-spacing: .01em;
+    white-space: nowrap;
+  }
+
+  .cat-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }   /* 桌贴上的分类圆点 */
+
+  /* 提醒时间标签（⏰ 15:30） */
+  .rem {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 999px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    background: var(--accent-soft);
+    color: var(--accent);
+    cursor: pointer;
+  }
+  html[data-theme="dark"] .rem { color: #aeb9ff; }
+
+  /* 分类管理（设置面板里） */
+  .cat-manager { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .cat-row { display: flex; align-items: center; gap: 8px; }
+  .cat-row input[type="color"] {
+    width: 30px; height: 30px; padding: 0; flex-shrink: 0;
+    border: 1px solid var(--line); border-radius: 8px; background: transparent; cursor: pointer;
+  }
+  .cat-row .set-input { flex: 1; }
+  .cat-del {
+    border: none; background: transparent; color: var(--text-muted); font-size: 16px;
+    width: 28px; height: 28px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
+    transition: color .15s, background .15s;
+  }
+  .cat-del:hover { color: var(--danger); background: var(--danger-soft); }
+  .cat-add {
+    margin-top: 8px; width: 100%;
+    border: 1px dashed var(--line); background: transparent; color: var(--text-muted);
+    font-size: 13px; padding: 8px; border-radius: 10px; cursor: pointer;
+    transition: color .15s, background .15s;
+  }
+  .cat-add:hover { color: var(--accent); background: var(--accent-soft); }
+
+  .list { list-style: none; }   /* 去掉 ul 默认圆点 */
+
+  /* 单个待办项 */
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 11px 10px;
+    border-radius: 14px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background .18s, border-color .18s, transform .18s;
+    animation: rise .32s cubic-bezier(.22, 1.2, .36, 1);   /* 新增项上浮动画 */
+  }
+  .item:hover { background: var(--hover); border-color: var(--line); transform: translateY(-1px); }
+  .item + .item { margin-top: 2px; }   /* 相邻项间距 */
+
+  /* 完成圆圈（勾选框） */
+  .check {
+    width: 22px; height: 22px;
+    border: 2px solid #d3d7e2;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    transition: background .18s, border-color .18s, box-shadow .18s;
+  }
+  html[data-theme="dark"] .check { border-color: #4a5064; }
+
+  /* 圆圈里的对勾 SVG：默认隐藏，完成时出现并「描边动画」画出来 */
+  .check svg { width: 12px; height: 12px; opacity: 0; transform: scale(.4); transition: opacity .18s, transform .18s; }
+  .check svg polyline { stroke-dasharray: 30; stroke-dashoffset: 30; }   /* 虚线技巧：先全隐藏 */
+  .item.done .check {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border-color: transparent;
+    box-shadow: 0 4px 14px var(--accent-soft);
+    animation: pop .3s cubic-bezier(.22, 1, .36, 1);   /* 完成时弹一下 */
+  }
+  .item.done .check svg { opacity: 1; transform: scale(1); }
+  .item.done .check svg polyline { animation: draw .32s ease forwards; }   /* 对勾描边画出 */
+  @keyframes pop { 50% { transform: scale(1.16); } }
+  @keyframes draw { to { stroke-dashoffset: 0; } }   /* 让描边从 30 减到 0 = 画出对勾 */
+
+  /* 优先级圆点（点它循环切换优先级） */
+  .prio {
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: transform .15s;
+  }
+  .prio:hover { transform: scale(1.25); }
+  .prio.p0 { border: 1.5px solid #d3d7e2; background: transparent; }   /* 无优先级：空心 */
+  html[data-theme="dark"] .prio.p0 { border-color: #4a5064; }
+  .prio.p1 { background: #2fbf71; }   /* 低：绿 */
+  .prio.p2 { background: #f5a623; }   /* 中：橙 */
+  .prio.p3 { background: #ff5c5c; }   /* 高：红 */
+
+  .item .text { flex: 1; font-size: 15px; line-height: 1.4; word-break: break-word; transition: color .2s; }
+  .item.done .text {
+    color: var(--text-muted);
+    text-decoration: line-through;           /* 完成划线 */
+    text-decoration-color: #c4c8d4;
+  }
+  .item .note {   /* 附属小字（AI 总结会记「记录于几点 · 原文多少字」） */
+    display: block;
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    opacity: .85;
+  }
+
+  /* 截止日期标签（今天/明天/已过期，颜色区分） */
+  .due {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    flex-shrink: 0;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .due.far { background: var(--hover); color: var(--text); }                        /* 还早：普通 */
+  .due.soon { background: #fff3e0; color: #e08900; }                                /* 临近：橙 */
+  .due.today { background: #fff3e0; color: #e08900; font-weight: 700; }             /* 今天：橙加粗 */
+  .due.overdue { background: var(--danger-soft); color: var(--danger); font-weight: 700; }  /* 过期：红 */
+  html[data-theme="dark"] .due.soon,
+  html[data-theme="dark"] .due.today { background: #3a2f1c; color: #ffb02e; }
+
+  /* 删除按钮：默认透明隐藏，鼠标悬停该项才显示 */
+  .del {
+    border: none;
+    background: transparent;
+    color: #c3c7d4;
+    font-size: 20px;
+    line-height: 1;
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    cursor: pointer;
+    opacity: 0;   /* 默认隐藏 */
+    transition: opacity .15s, background .15s, color .15s;
+    flex-shrink: 0;
+  }
+  .item:hover .del { opacity: 1; }   /* 悬停该项 → 显示删除 */
+  .del:hover { background: var(--danger-soft); color: var(--danger); }
+
+  /* 编辑按钮：同上，悬停显示 */
+  .edit {
+    border: none;
+    background: transparent;
+    color: #c3c7d4;
+    font-size: 16px;
+    line-height: 1;
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .15s, background .15s, color .15s;
+    flex-shrink: 0;
+  }
+  .item:hover .edit { opacity: 1; }
+  .edit:hover { background: var(--accent-soft); color: var(--accent); }
+
+  /* 内联编辑输入框（点击 ✎ 后把文字替换成输入框） */
+  .edit-input {
+    width: 100%;
+    font-size: 15px;
+    line-height: 1.4;
+    color: var(--text);
+    background: var(--input-bg);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 4px 8px;
+    outline: none;
+    font-family: inherit;
+  }
+
+  /* 底部：计数 + 清除按钮 */
+  .footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 16px;
+    padding-top: 15px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .clear-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 8px;
+    transition: color .15s, background .15s;
+  }
+  .clear-btn:hover { color: var(--danger); background: var(--danger-soft); }
+
+  /* 空状态 */
+  .empty { text-align: center; padding: 42px 20px; color: var(--text-muted); font-size: 14px; }
+  .empty .icon { font-size: 40px; margin-bottom: 10px; opacity: .6; }
+
+  /* ---------- 桌贴模式 ----------
+     桌贴窗口加载同一个文件，通过 body.widget 类切换成「桌贴皮肤」：
+     隐藏主界面，显示 .widget-ui，背景透明。 */
+  body.widget {
+    background: transparent;
+    padding: 0;
+    align-items: flex-start;
+    justify-content: flex-start;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;   /* 桌贴禁止选中文字 */
+  }
+  body.widget .app { display: none; }          /* 隐藏主界面 */
+  body.widget .bg { display: none; }           /* 隐藏流光背景 */
+  body.widget .titlebar { display: none; }
+  body.widget .island { display: none; }
+  body.widget .settings-overlay { display: none; }
+
+  /* 桌贴主容器：默认 display:none，桌贴模式下才显示 */
+  .widget-ui {
+    --w-alpha: 0.65;   /* 桌贴透明度（可调） */
+    --w-frost: 0;      /* 桌贴磨砂度（可调） */
+    position: relative;
+    display: none;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background: rgba(24, 26, 34, var(--w-alpha));
+    color: #e8eaf1;
+    overflow: hidden;
+  }
+  .widget-ui::before {   /* 伪元素做磨砂覆盖层 */
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, var(--w-frost));
+    pointer-events: none;
+  }
+  body.widget .widget-ui { display: flex; }
+
+  /* 桌贴顶部条（可拖动 + 按钮） */
+  .w-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 8px 6px 12px;
+    -webkit-app-region: drag;   /* 可拖动窗口 */
+    cursor: move;
+    flex-shrink: 0;
+  }
+  .w-bar .w-title { font-size: 13px; font-weight: 600; letter-spacing: .01em; color: #cdd2e0; }
+  .w-bar .w-drag { flex: 1; }   /* 弹性占位，把按钮推到右边 */
+
+  .w-btn {
+    -webkit-app-region: no-drag;
+    border: none;
+    background: rgba(255,255,255,0.08);
+    color: #cdd2e0;
+    width: 26px; height: 26px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    transition: background .15s;
+  }
+  .w-btn:hover { background: rgba(255,255,255,0.18); }
+  .w-btn.active { background: rgba(109,123,255,0.9); color: #fff; }   /* 激活态（如图钉置顶中） */
+  .w-btn svg { width: 15px; height: 15px; }
+
+  /* 锁定状态：只保留标题 + 锁图标 + 列表 */
+  .widget-ui.locked .w-add,
+  .widget-ui.locked .w-foot,
+  .widget-ui.locked .w-btn { display: none; }          /* 隐藏除锁外的所有按钮 */
+  .widget-ui.locked #wLock { display: grid; }          /* 只留锁按钮 */
+  .widget-ui.locked .w-bar { -webkit-app-region: no-drag; cursor: default; }   /* 锁定后不能拖 */
+  .widget-ui.locked .w-list .del { display: none; }    /* 锁定后不能删除 */
+
+  /* 穿透点击指示（标题变橙色提示） */
+  .widget-ui.click-through .w-title { color: #ffb02e; }
+
+  .w-add { display: flex; gap: 6px; padding: 0 10px 8px; flex-shrink: 0; }
+  .w-add input {
+    flex: 1;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.06);
+    color: #e8eaf1;
+    font-size: 14px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    outline: none;
+    transition: border-color .18s;
+  }
+  .w-add input::placeholder { color: rgba(205,210,224,0.5); }
+  .w-add input:focus { border-color: #6d7bff; }
+  .w-add .add-btn { padding: 0 14px; font-size: 16px; border-radius: 10px; }
+
+  .w-list { list-style: none; flex: 1; overflow-y: auto; padding: 2px 8px 8px; }
+  .w-list::-webkit-scrollbar { width: 8px; }                                    /* 自定义滚动条 */
+  .w-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+
+  /* 桌贴里的待办项样式（覆盖主界面深色样式） */
+  .w-list .item { padding: 8px 10px; border-radius: 10px; border: none; }
+  .w-list .item:hover { background: rgba(255,255,255,0.08); border-color: transparent; transform: none; }
+  .w-list .item .text { color: #e8eaf1; font-size: 14px; }
+  .w-list .item.done .text { color: rgba(255,255,255,0.4); text-decoration-color: rgba(255,255,255,0.35); }
+  .w-list .check { border-color: rgba(255,255,255,0.35); }
+  .w-list .item.done .check { background: #6d7bff; border-color: #6d7bff; }
+  .w-list .prio.p0 { border-color: rgba(255,255,255,0.35); }
+  .w-list .del { color: rgba(255,255,255,0.45); }
+  .w-list .del:hover { background: rgba(255,91,91,0.25); color: #ff6b6b; }
+
+  .w-empty { flex: 1; display: grid; place-items: center; color: rgba(205,210,224,0.55); font-size: 13px; }
+
+  .w-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px 10px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    font-size: 12px;
+    color: rgba(205,210,224,0.7);
+    flex-shrink: 0;
+  }
+  .w-foot .w-count { flex: 1; }
+  .w-opacity { -webkit-app-region: no-drag; display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .w-opacity input[type="range"] { -webkit-app-region: no-drag; width: 76px; accent-color: #6d7bff; }
+
+  /* ---------- 设置界面 ---------- */
+  .settings-overlay {   /* 半透明遮罩层，盖在整个界面之上 */
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: grid;
+    place-items: center;
+    background: rgba(10, 12, 18, 0.35);
+    backdrop-filter: blur(4px);
+    opacity: 0;              /* 默认透明 */
+    pointer-events: none;    /* 默认不响应点击 */
+    transition: opacity .22s;
+  }
+  .settings-overlay.open { opacity: 1; pointer-events: auto; }   /* 打开：显示并可点 */
+  .settings {
+    width: min(430px, calc(100vw - 40px));   /* 宽度取 430 和「屏宽-40」的较小值 */
+    max-height: calc(100vh - 60px);
+    overflow-y: auto;
+    background: rgba(255, 255, 255, 0.88);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    backdrop-filter: blur(20px) saturate(140%);
+    border: 1px solid var(--glass-border);
+    border-radius: 18px;
+    box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+    padding: 18px 20px;
+    transform: translateY(12px) scale(.98);   /* 初始下沉缩小，打开时弹回 */
+    transition: transform .28s cubic-bezier(.22, 1, .36, 1);
+  }
+  .settings-overlay.open .settings { transform: none; }
+  html[data-theme="dark"] .settings { background: rgba(28, 30, 40, 0.9); }
+  .settings-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .settings-head h2 { font-size: 18px; font-weight: 700; }
+  .set-section { margin-top: 14px; }
+  .set-section h3 { font-size: 13px; color: var(--text-muted); font-weight: 600; margin-bottom: 8px; letter-spacing: .02em; }
+  .set-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+  .set-row label { width: 56px; font-size: 14px; flex-shrink: 0; }
+  .set-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .set-row input[type="checkbox"] { margin-left: auto; width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+  .set-val { width: 44px; text-align: right; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .guide { list-style: none; }
+  .guide li { font-size: 13px; color: var(--text-muted); padding: 4px 0; }
+  .guide b { color: var(--text); font-weight: 600; }
+  .reset-btn {
+    margin-top: 16px;
+    width: 100%;
+    border: 1px solid var(--line);
+    background: var(--input-bg);
+    color: var(--text-muted);
+    font-size: 13px;
+    padding: 9px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: color .15s, background .15s;
+  }
+  .reset-btn:hover { color: var(--danger); background: var(--danger-soft); }
+  .set-input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--line);
+    background: var(--input-bg);
+    color: var(--text);
+    font-size: 13px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    outline: none;
+    transition: border-color .18s;
+  }
+  .set-input:focus { border-color: var(--accent); }
+  .sync-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .sync-actions .save-btn { flex: 1; margin-top: 0; }
+  .save-btn.ghost { background: var(--input-bg); color: var(--text); border: 1px solid var(--line); }
+  .save-btn {
+    margin-top: 10px;
+    width: 100%;
+    border: none;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #fff;
+    font-size: 13px;
+    padding: 9px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: filter .18s;
+  }
+  .save-btn:hover { filter: brightness(1.06); }
+</style>
+</head>
+<body>
+  <!-- 流光背景（4 个光斑） -->
+  <div class="bg" aria-hidden="true">
+    <div class="blob b1"></div>
+    <div class="blob b2"></div>
+    <div class="blob b3"></div>
+    <div class="blob b4"></div>
+  </div>
+
+  <!-- 自定义标题栏（无边框窗口的三个按钮） -->
+  <div class="titlebar">
+    <button class="tb-btn" id="winMin" title="最小化">—</button>
+    <button class="tb-btn" id="winMax" title="最大化">□</button>
+    <button class="tb-btn tb-close" id="winClose" title="关闭">×</button>
+  </div>
+
+  <!-- 灵动岛提醒条 -->
+  <div class="island" id="island">
+    <span class="island-dot"></span>
+    <span class="island-body" id="islandBody"></span>
+  </div>
+
+  <!-- 主窗口 UI -->
+  <div class="app">
+    <div class="header">
+      <div>
+        <div class="date" id="date"></div>
+        <h1>待办清单<span class="dot">.</span></h1>
+      </div>
+      <div class="header-actions">
+        <!-- 桌贴按钮：只有桌面端（window.api 存在）才显示，见 JS 里 style.display='' -->
+        <button class="icon-btn" id="widgetBtn" title="打开桌贴" style="display:none"></button>
+        <button class="icon-btn" id="settingsBtn" title="设置"></button>
+        <button class="icon-btn" id="themeBtn" title="切换深色模式"></button>
+      </div>
+    </div>
+
+    <div class="progress"><div class="progress-fill" id="progressFill"></div></div>
+
+    <!-- 添加任务 -->
+    <div class="add-row">
+      <input type="text" id="input" placeholder="添加新任务…" maxlength="200">
+      <button class="add-btn" id="addBtn">添加</button>
+    </div>
+
+    <!-- 选项：优先级 / 分类 / 截止日期 / 提醒时间 -->
+    <div class="opts">
+      <span class="opt-label">优先级</span>
+      <select id="prioSelect" title="新任务的优先级">
+        <option value="0">无</option>
+        <option value="1">低</option>
+        <option value="2">中</option>
+        <option value="3">高</option>
+      </select>
+      <select id="catSelect" title="新任务的分类"></select>
+      <input type="date" id="dueInput" title="新任务的截止日期（可选）">
+      <input type="datetime-local" id="remindInput" title="提醒时间（可选）">
+    </div>
+
+    <!-- 分类筛选胶囊 -->
+    <div class="cats" id="cats"></div>
+
+    <!-- 三个筛选标签 -->
+    <div class="tabs">
+      <button class="tab active" data-filter="all">全部</button>
+      <button class="tab" data-filter="active">未完成</button>
+      <button class="tab" data-filter="done">已完成</button>
+    </div>
+
+    <ul class="list" id="list"></ul>
+    <div class="empty" id="empty" style="display:none">
+      <div class="icon">🗒️</div>
+      <div>还没有任务，添加一个吧</div>
+    </div>
+
+    <div class="footer">
+      <span id="count">0 项任务</span>
+      <button class="clear-btn" id="clearBtn">清除已完成</button>
+    </div>
+  </div>
+
+  <!-- 桌贴 UI（桌贴模式下才显示） -->
+  <div class="widget-ui" id="widgetUI">
+    <div class="w-bar">
+      <span class="w-title">待办清单</span>
+      <span class="w-drag"></span>
+      <button class="w-btn" id="wOpenMain" title="打开主窗口"></button>
+      <button class="w-btn active" id="wPin" title="置顶"></button>
+      <button class="w-btn" id="wLock" title="锁定"></button>
+      <button class="w-btn" id="wClose" title="关闭桌贴"></button>
+    </div>
+    <div class="w-add">
+      <input type="text" id="wInput" placeholder="快速添加…" maxlength="200">
+      <button class="add-btn" id="wAdd">＋</button>
+    </div>
+    <ul class="list w-list" id="wList"></ul>
+    <div class="w-empty" id="wEmpty" style="display:none">暂无待办</div>
+    <div class="w-foot">
+      <span class="w-count" id="wCount">0 项待办</span>
+      <span class="w-opacity">
+        透明
+        <input type="range" id="wOpacity" min="15" max="95" value="65">
+      </span>
+    </div>
+  </div>
+
+<!-- 设置界面 -->
+<div class="settings-overlay" id="settingsOverlay">
+  <div class="settings">
+    <div class="settings-head">
+      <h2>设置</h2>
+      <button class="icon-btn" id="settingsClose" title="关闭">×</button>
+    </div>
+    <div class="set-section">
+      <h3>主界面</h3>
+      <div class="set-row"><label>透明度</label><input type="range" id="mainOpacity" min="10" max="90" value="42"><span class="set-val" id="mainOpacityVal">42%</span></div>
+      <div class="set-row"><label>磨砂感</label><input type="range" id="mainBlur" min="0" max="30" value="10"><span class="set-val" id="mainBlurVal">10px</span></div>
+    </div>
+    <div class="set-section">
+      <h3>桌贴</h3>
+      <div class="set-row"><label>透明度</label><input type="range" id="widgetOpacity" min="15" max="95" value="65"><span class="set-val" id="widgetOpacityVal">65%</span></div>
+      <div class="set-row"><label>磨砂感</label><input type="range" id="widgetFrost" min="0" max="50" value="0"><span class="set-val" id="widgetFrostVal">0%</span></div>
+      <div class="set-row"><label>开机自启</label><input type="checkbox" id="autoOpenWidget"></div>
+    </div>
+    <div class="set-section">
+      <h3>提醒</h3>
+      <div class="set-row"><label>提前量</label><input type="number" id="remindLead" class="set-input" min="0" max="720" step="5" value="30"><span class="set-val">分钟</span></div>
+      <div class="set-row"><label>微信提醒</label><input type="password" id="scKey" class="set-input" placeholder="Server酱 SendKey（SCT开头，留空关闭）"></div>
+    </div>
+    <div class="set-section">
+      <h3>总结</h3>
+      <div class="set-row"><label>总结方式</label><select id="aiMode" class="set-input"><option value="auto">自动（有 Key 用 DeepSeek，否则本地）</option><option value="ai">DeepSeek 大模型（需 Key）</option></select></div>
+      <div class="set-row"><label>API Key</label><input type="password" id="aiKey" class="set-input" placeholder="sk-..."></div>
+      <div class="set-row"><label>接口地址</label><input type="text" id="aiBase" class="set-input" placeholder="https://api.deepseek.com"></div>
+      <div class="set-row"><label>模型</label><input type="text" id="aiModel" class="set-input" placeholder="deepseek-chat"></div>
+      <button class="save-btn" id="aiSave">保存 AI 设置</button>
+    </div>
+    <div class="set-section">
+      <h3>云端同步（Gitee）</h3>
+      <div class="set-row"><label>Gitee 用户名</label><input type="text" id="cloudUrl" class="set-input" placeholder="gitee 用户名"></div>
+      <div class="set-row"><label>仓库名</label><input type="text" id="cloudKey" class="set-input" placeholder="私有仓库名"></div>
+      <div class="set-row"><label>访问令牌</label><input type="password" id="cloudSyncKey" class="set-input" placeholder="私人令牌 PAT"></div>
+      <div class="set-row"><label>自动同步</label><input type="checkbox" id="cloudAuto"></div>
+      <div class="sync-actions">
+        <button class="save-btn" id="cloudPush">立即同步</button>
+        <button class="save-btn ghost" id="cloudPull">从云端拉取</button>
+      </div>
+    </div>
+    <div class="set-section">
+      <h3>分类管理</h3>
+      <div class="cat-manager" id="catManager"></div>
+      <button class="cat-add" id="catAdd">＋ 添加分类</button>
+    </div>
+    <div class="set-section">
+      <h3>快捷方式 · 操作指引</h3>
+      <ul class="guide">
+        <li><b>Ctrl+Shift+S</b> 总结选中文字并存入待办（AI / 本地）</li>
+        <li><b>托盘右键</b> →「总结选中文字」 同样触发总结</li>
+        <li><b>Enter</b> 添加任务</li>
+        <li><b>点击圆圈</b> 完成 / 取消</li>
+        <li><b>点击彩色圆点</b> 切换优先级</li>
+        <li><b>点击日期标签</b> 清除截止日期</li>
+        <li><b>分类</b> 添加任务时选分类，点上方分类标签筛选</li>
+        <li><b>提醒时间</b> 设置后到点弹出系统通知，点 ⏰ 标签清除提醒</li>
+        <li><b>拖动顶部</b> 移动窗口 · <b>双击顶部</b> 最大化</li>
+        <li><b>— □ ×</b> 最小化 / 最大化 / 关闭</li>
+        <li><b>齿轮按钮</b> 打开设置</li>
+        <li><b>关闭主窗口</b> 最小化到托盘，托盘可退出</li>
+        <li><b>图钉按钮</b> 打开 / 关闭桌贴</li>
+      </ul>
+    </div>
+    <button class="reset-btn" id="resetSettings">恢复默认设置</button>
+  </div>
+</div>
+
+<script>
+  // ============================================================
+  //  渲染进程业务逻辑（所有数据都存在 localStorage）
+  // ============================================================
+  //  localStorage 是浏览器/Electron 渲染进程的本地存储（键值对，只存字符串）。
+  //  本应用用几个 key 分别存不同数据：
+  //    todo.items.v2       待办列表
+  //    todo.theme.v1       主题（light/dark）
+  //    todo.categories.v1  分类列表
+  //    todo.settings.v1    设置（透明度/提醒/微信等）
+  //    todo.gitee.v1       云端同步配置
+  //    todo.widget.*       桌贴相关（透明度/锁定状态等）
+
+  const KEY = 'todo.items.v2';                 // 待办数据 key
+  const KEY_THEME = 'todo.theme.v1';           // 主题 key
+  const KEY_WOPACITY = 'todo.widget.opacity.v1';  // 桌贴透明度（旧 key，做迁移用）
+  const KEY_CATS = 'todo.categories.v1';       // 分类 key
+
+  // ★ 判断自己是不是桌贴窗口：读 URL 的 ?widget=1 参数
+  const IS_WIDGET = new URLSearchParams(location.search).get('widget') === '1';
+
+  // 优先级定义（下标 = priority 值 0~3）
+  const PRIO = [
+    { name: '无优先级' },
+    { name: '低优先级' },
+    { name: '中优先级' },
+    { name: '高优先级' },
+  ];
+
+  // 内联 SVG 图标（不用图片文件，直接塞 SVG 字符串，颜色跟 currentColor 走）
+  const ICONS = {
+    pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>',
+    moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>',
+    sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>',
+    maximize: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
+    lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+    unlock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>',
+    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  };
+
+  // 全局数据：待办列表、筛选状态、分类列表、分类筛选
+  let items = load();          // 从 localStorage 加载待办
+  let filter = 'all';          // 当前「全部/未完成/已完成」筛选
+  let categories = loadCategories();  // 分类列表
+  let catFilter = 'all';       // 当前分类筛选
+
+  // 小工具：$(选择器) = document.querySelector 的简写
+  const $ = (s) => document.querySelector(s);
+  const input = $('#input');   // 主窗口输入框
+  const list = $('#list');     // 主窗口列表
+  const empty = $('#empty');
+  const count = $('#count');
+  const wList = $('#wList');   // 桌贴列表
+  const wEmpty = $('#wEmpty');
+  const wCount = $('#wCount');
+  const wInput = $('#wInput'); // 桌贴输入框
+
+  const WEEK = ['日','一','二','三','四','五','六'];
+
+  // 顶部日期显示（如「2026年9月24日 星期四」）
+  function today() {
+    const d = new Date();
+    return `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日 星期${WEEK[d.getDay()]}`;
+  }
+
+  // ---------- 数据持久化 ----------
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      return raw ? JSON.parse(raw) : [];   // JSON 字符串 → 数组
+    } catch { return []; }                  // 损坏就返回空数组（容错）
+  }
+
+  // 保存待办 + 触发云端同步（scheduleCloudPush 是防抖的，见后面）
+  function save() { localStorage.setItem(KEY, JSON.stringify(items)); scheduleCloudPush(); }
+
+  // HTML 转义：防止用户输入的内容被当成 HTML 注入（XSS 防护）
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  }
+
+  // ---------- 分类 ----------
+  function defaultCategories() {
+    return [
+      { id: 'work', name: '工作', color: '#5b6cff' },
+      { id: 'life', name: '生活', color: '#2fbf71' },
+      { id: 'study', name: '学习', color: '#f5a623' },
+    ];
+  }
+  function loadCategories() {
+    try {
+      const raw = localStorage.getItem(KEY_CATS);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    const def = defaultCategories();   // 第一次用：写入默认分类
+    try { localStorage.setItem(KEY_CATS, JSON.stringify(def)); } catch {}
+    return def;
+  }
+  function saveCategories() { localStorage.setItem(KEY_CATS, JSON.stringify(categories)); scheduleCloudPush(); }
+  function catById(id) { return categories.find(c => c.id === id) || null; }   // 按 id 找分类
+
+  // 渲染「新任务分类」下拉框
+  function renderCatSelect() {
+    const sel = $('#catSelect');
+    const prev = sel.value;   // 记住当前选中的，重渲染后保持
+    sel.innerHTML = '<option value="">未分类</option>' +
+      categories.map(c => `<option value="${c.id}"${c.id === prev ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  }
+
+  // 渲染分类筛选胶囊（全部 / 未分类 / 各分类）
+  function renderCatChips() {
+    const box = $('#cats');
+    const chips = [{ id: 'all', name: '全部', color: null }, { id: 'none', name: '未分类', color: null }]
+      .concat(categories.map(c => ({ id: c.id, name: c.name, color: c.color })));
+    box.innerHTML = '';
+    chips.forEach(ch => {
+      const b = document.createElement('button');
+      b.className = 'cat-chip' + (catFilter === ch.id ? ' active' : '');
+      b.innerHTML = (ch.color ? `<span class="dot" style="background:${ch.color}"></span>` : '') + esc(ch.name);
+      b.addEventListener('click', () => { catFilter = ch.id; renderCatChips(); render(); });   // 点分类 → 设筛选 → 重渲染
+      box.appendChild(b);
+    });
+  }
+
+  // 渲染设置面板里的「分类管理」列表（每行：颜色选择 + 名称输入 + 删除按钮）
+  function renderCatManager() {
+    const box = $('#catManager');
+    box.innerHTML = '';
+    categories.forEach((c, idx) => {
+      const row = document.createElement('div');
+      row.className = 'cat-row';
+      row.innerHTML = `
+        <input type="color" value="${c.color}">
+        <input type="text" class="set-input" value="${esc(c.name)}" maxlength="12" placeholder="分类名">
+        <button class="cat-del" title="删除分类">×</button>
+      `;
+      // 改颜色 → 立即保存并全刷新
+      row.querySelector('input[type="color"]').addEventListener('input', (e) => { c.color = e.target.value; saveCategories(); renderCatSelect(); renderCatChips(); renderAll(); });
+      // 改名 → 立即保存并全刷新
+      row.querySelector('input[type="text"]').addEventListener('input', (e) => { c.name = e.target.value; saveCategories(); renderCatSelect(); renderCatChips(); renderAll(); });
+      // 删除分类 → 把该分类下的待办都归为「未分类」
+      row.querySelector('.cat-del').addEventListener('click', () => {
+        categories.splice(idx, 1);
+        items.forEach(it => { if (it.category === c.id) it.category = null; });
+        saveCategories(); save();
+        renderCatManager(); renderCatSelect(); renderCatChips(); renderAll();
+      });
+      box.appendChild(row);
+    });
+  }
+
+  // ---------- 时间自动识别 ----------
+  // 这一组函数能把「明天下午3点」「30分钟后」这类自然语言解析成具体时间，
+  // 是本项目最有意思的一块，纯字符串 + 正则实现。
+
+  function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }  // 当天 0 点
+  function pad2(n) { return String(n).padStart(2, '0'); }                              // 补零：5 → "05"
+  function ymd(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }  // 转 YYYY-MM-DD
+
+  // 中文数字 → 阿拉伯数字（支持「半/一~九/十」及组合）
+  const CN_NUM = { '半': 0.5, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+  function parseNum(s) {
+    if (/^\d+$/.test(s)) return +s;          // 纯数字直接转
+    if (s === '十') return 10;
+    if (s in CN_NUM) return CN_NUM[s];       // 单个中文字
+    if (s.length === 2) {
+      if (s[0] === '十') return 10 + (CN_NUM[s[1]] || 0);   // 十一 ~ 十九
+      if (s[1] === '十') return (CN_NUM[s[0]] || 0) * 10;   // 二十、三十…
+    }
+    if (s.length === 3 && s[1] === '十') return (CN_NUM[s[0]] || 0) * 10 + (CN_NUM[s[2]] || 0);  // 二十一等
+    return null;   // 解析不了
+  }
+
+  // 解析「哪一天」：返回 Date（只精确到天）
+  function parseDay(text) {
+    const now = new Date(), today = startOfDay(now);
+    let m;
+    // 绝对日期：2026-09-25 / 2026/9/25 / 2026年9月25日 / 9月25日 / 9月25号
+    if ((m = text.match(/(\d{4})\s*[年\-\/]\s*(\d{1,2})\s*[月\-\/]\s*(\d{1,2})\s*[日号]?/)))
+      return new Date(+m[1], +m[2] - 1, +m[3]);
+    if ((m = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/))) {
+      let d = new Date(now.getFullYear(), +m[1] - 1, +m[2]);
+      if (d < today) d = new Date(now.getFullYear() + 1, +m[1] - 1, +m[2]);   // 已过则推到明年
+      return d;
+    }
+    // 相对天：今天/明天/后天/大后天
+    const dayWords = { '大后天': 3, '后天': 2, '明天': 1, '今天': 0 };
+    for (const w in dayWords) {
+      if (text.includes(w)) { const d = new Date(today); d.setDate(d.getDate() + dayWords[w]); return d; }
+    }
+    // 星期：周X / 星期X / 礼拜X / 下(下)周X
+    if ((m = text.match(/([下]+)?(?:个)?(?:周|星期|礼拜)([一二三四五六日天])/))) {
+      const week = m[2] === '天' ? 7 : '一二三四五六日'.indexOf(m[2]) + 1;   // 目标星期几（1~7）
+      const todayWd = now.getDay() || 7;   // 今天是星期几（周日=7）
+      let diff = week - todayWd + (m[1] ? m[1].length * 7 : 0);   // 「下周」+7，「下下周」+14
+      if (diff < 0) diff += 7;   // 本周已过则算下周
+      const d = new Date(today); d.setDate(d.getDate() + diff);
+      return d;
+    }
+    return null;
+  }
+
+  // 解析「几点几分」：支持 HH:MM、X点、X点半、X点Y分，以及凌晨/早上/上午/中午/下午/晚上 等时段
+  function parseTimeOfDay(text) {
+    let hour = null, minute = 0, m;
+    if ((m = text.match(/(\d{1,2})\s*[:：]\s*(\d{1,2})/))) { hour = +m[1]; minute = +m[2]; }            // 15:30
+    else if ((m = text.match(/(\d{1,2})\s*[点时]\s*(\d{1,2})\s*分?/))) { hour = +m[1]; minute = +m[2]; }  // 3点30分
+    else if ((m = text.match(/(\d{1,2})\s*[点时](半)?/))) { hour = +m[1]; minute = m[2] ? 30 : 0; }       // 3点 / 3点半
+
+    // 时段 → 基准小时数（下午3点 → 15 点）
+    const periods = [['凌晨', 4], ['早上', 7], ['早晨', 7], ['上午', 9], ['中午', 12], ['下午', 14], ['傍晚', 18], ['晚上', 20], ['深夜', 23]];
+    let per = null;
+    for (const p of periods) if (text.includes(p[0])) { per = p; break; }
+
+    if (hour == null && per) hour = per[1];                                  // 只写了「下午」没写几点 → 用基准
+    else if (hour != null && per && per[1] >= 12 && hour < 12) hour += 12;   // 「下午3点」→ 3+12=15
+    if (hour == null) return null;
+    if (hour >= 24) hour = hour % 24;   // 兜底
+    return { hour, minute };
+  }
+
+  // 把时间戳格式化成「今天/明天/后天 或 M月D日」+「HH:MM」
+  function fmtDateTime(ms) {
+    const d = new Date(ms);
+    const diff = Math.round((startOfDay(d) - startOfDay(new Date())) / 86400000);
+    const hm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    const day = diff === 0 ? '今天' : diff === 1 ? '明天' : diff === 2 ? '后天'
+      : (d.getMonth() + 1) + '月' + d.getDate() + '日';
+    return day + ' ' + hm;
+  }
+
+  // ★ 总入口：从文字里解析出 { due, remindAt, deadline }
+  function parseTime(text) {
+    if (!text) return null;
+    const now = new Date();
+
+    // 相对时长：30分钟后 / 2小时后 / 3天后 / 半小时后 / 十五分钟后
+    // （这类本身就是「多久后提醒」，不做提前量处理）
+    const m = text.match(/([0-9]{1,3}|[半一两二三四五六七八九十]{1,3})\s*(分钟|小时|天|周|礼拜|星期)\s*后/);
+    if (m) {
+      const n = parseNum(m[1]);
+      if (n != null) {
+        const unit = m[2];
+        const ms = unit === '分钟' ? 60000 : unit === '小时' ? 3600000 : unit === '天' ? 86400000 : 604800000;
+        const dt = new Date(now.getTime() + n * ms);
+        return { due: ymd(dt), remindAt: dt.getTime() };
+      }
+    }
+
+    const day = parseDay(text);
+    const tod = parseTimeOfDay(text);
+    if (!day && !tod) return null;   // 啥都没解析出来
+
+    // 截止时间（完整时刻）
+    let deadline;
+    if (day) {
+      // 有日期：默认 9:00（没写时刻时），否则用解析到的时刻
+      deadline = new Date(day);
+      deadline.setHours(tod ? tod.hour : 9, tod ? tod.minute : 0, 0, 0);
+    } else {
+      // 只给了时刻、没给日期：默认今天；今天的这个时刻已过才顺延到明天
+      deadline = new Date(now);
+      deadline.setHours(tod.hour, tod.minute, 0, 0);
+      if (deadline.getTime() < now.getTime()) deadline.setDate(deadline.getDate() + 1);
+    }
+
+    // 提醒时间 = 截止时间提前「提醒提前量」分钟（设置面板可调）；
+    // 若截止还没到、但提前量已越过当前，则立即提醒
+    let remindAt = deadline.getTime() - (settings.remindLead || 0) * 60000;
+    if (remindAt < now.getTime() && deadline.getTime() > now.getTime()) remindAt = now.getTime();
+
+    return { due: ymd(deadline), remindAt, deadline: deadline.getTime() };
+  }
+
+  // ---------- 增删改 ----------
+  // 添加一条待办
+  function add(text, priority, due, category, remindAt) {
+    text = (text || '').trim();
+    if (!text) return;
+
+    // 自动识别文本中的时间（仅主窗口；桌贴显式传了 null，不识别）
+    const auto = (due === undefined || remindAt === undefined) ? parseTime(text) : null;
+
+    items.unshift({   // unshift：新任务插到最前面
+      id: Date.now() + Math.random(),   // 唯一 id（时间戳 + 随机数，足够唯一）
+      text,
+      done: false,
+      // 优先级：优先用显式传入的；否则读下拉框（注意用 + 转数字）
+      priority: priority === undefined ? +$('#prioSelect').value : +priority,
+      // 截止日期：显式传入 > 自动识别 > 日期输入框
+      due: due === undefined ? ((auto && auto.due) || $('#dueInput').value || null) : due,
+      // 分类：显式传入 > 下拉框选择
+      category: category === undefined ? ($('#catSelect').value || null) : category,
+      // 提醒：显式传入 > 自动识别 > 时间输入框
+      remindAt: remindAt === undefined ? ((auto && auto.remindAt) || readRemind()) : remindAt,
+      reminded: false,   // 是否已触发过提醒
+      createdAt: Date.now(),
+    });
+    save();
+    renderAll();
+    // 灵动岛提示：识别到时间就显示「什么时候提醒」
+    if (auto && auto.remindAt) showIsland('⏰', '已添加，' + fmtDateTime(auto.remindAt) + ' 提醒' + (auto.deadline ? '（' + fmtDateTime(auto.deadline) + ' 截止）' : ''));
+    else showIsland('＋', '已添加');
+  }
+
+  function toggle(id) {
+    const it = items.find(i => i.id === id);
+    if (it) { it.done = !it.done; save(); renderAll(); if (it.done) showIsland('✅', '已完成'); }
+  }
+
+  function remove(id) {
+    items = items.filter(i => i.id !== id);   // filter 掉这一条 = 删除
+    save();
+    renderAll();
+  }
+
+  function clearDone() {
+    items = items.filter(i => !i.done);   // 只保留未完成
+    save();
+    renderAll();
+  }
+
+  // 循环切换优先级：0→1→2→3→0
+  function cyclePrio(id) {
+    const it = items.find(i => i.id === id);
+    if (it) { it.priority = (it.priority + 1) % 4; save(); renderAll(); }
+  }
+
+  // 点日期标签 → 清除截止日期
+  function clearDue(id) {
+    const it = items.find(i => i.id === id);
+    if (it) { it.due = null; save(); renderAll(); }
+  }
+
+  // 内联编辑：点 ✎ 后把文字换成输入框，Enter/失焦保存，Esc 取消
+  function startEdit(it, li) {
+    const textEl = li.querySelector('.text');
+    textEl.innerHTML = '';
+    const input = document.createElement('input');
+    input.className = 'edit-input';
+    input.value = it.text;
+    input.maxLength = 200;
+    let cancel = false;   // 是否按了 Esc
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') input.blur();          // 回车 → 触发 blur 保存
+      else if (e.key === 'Escape') { cancel = true; input.blur(); }
+    });
+    input.addEventListener('blur', () => {   // 失焦 = 结束编辑
+      if (cancel) { renderAll(); return; }    // 取消 → 直接重渲染还原
+      const v = input.value.trim();
+      if (v && v !== it.text) { it.text = v; save(); showIsland('✎', '已更新'); }
+      renderAll();
+    });
+    textEl.appendChild(input);
+    input.focus();
+    input.select();
+  }
+
+  // 排序：未完成在前；同状态按优先级降序；再按创建时间降序
+  function sortItems(arr) {
+    return arr.slice().sort((a, b) => {
+      if (a.done !== b.done) return a.done ? 1 : -1;   // 未完成排在前面
+      if (b.priority !== a.priority) return b.priority - a.priority;  // 优先级高的在前
+      return b.createdAt - a.createdAt;   // 新的在前
+    });
+  }
+
+  // 根据筛选条件拿到「当前应显示的列表」
+  function visible() {
+    let arr = items;
+    if (catFilter !== 'all') {
+      // 分类筛选：「未分类」= category 为 null；否则匹配具体分类 id
+      arr = arr.filter(i => (i.category || null) === (catFilter === 'none' ? null : catFilter));
+    }
+    if (filter === 'active') return sortItems(arr.filter(i => !i.done));
+    if (filter === 'done') return sortItems(arr.filter(i => i.done));
+    return sortItems(arr);
+  }
+
+  // 根据截止日期字符串算「显示状态」：过期/今天/临近/还早
+  function dueInfo(ds) {
+    if (!ds) return null;
+    const [y, m, d] = ds.split('-').map(Number);
+    const due = new Date(y, m - 1, d);
+    const now = new Date(); now.setHours(0,0,0,0);
+    const diff = Math.round((due - now) / 86400000);   // 距今天的天数
+    if (diff < 0) return { cls: 'overdue', label: `${m}月${d}日 · 已过期` };
+    if (diff === 0) return { cls: 'today', label: '今天' };
+    if (diff <= 3) return { cls: 'soon', label: `${m}月${d}日` };
+    return { cls: 'far', label: `${m}月${d}日` };
+  }
+
+  function checkSVG() {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5"
+             stroke-linecap="round" stroke-linejoin="round">
+             <polyline points="4 12.5 10 18.5 20 6.5"></polyline></svg>`;
+  }
+
+  // 渲染主窗口列表（核心渲染函数）
+  function render() {
+    const vs = visible();
+    list.innerHTML = '';
+
+    vs.forEach(it => {
+      const li = document.createElement('li');
+      li.className = 'item' + (it.done ? ' done' : '');
+      // 先用 innerHTML 搭骨架（静态部分），再用 JS 填动态部分
+      li.innerHTML = `
+        <span class="check">${checkSVG()}</span>
+        <span class="prio p${it.priority}" title="${PRIO[it.priority].name}（点击切换）"></span>
+        <span class="tag" style="display:none"></span>
+        <span class="text"></span>
+        <span class="rem" style="display:none"></span>
+        <span class="due" style="display:none"></span>
+        <button class="edit" title="编辑">✎</button>
+        <button class="del" title="删除">×</button>
+      `;
+      const textEl = li.querySelector('.text');
+      textEl.textContent = it.text;   // ★ 用 textContent 而不是 innerHTML，防 XSS
+      if (it.note) {   // 有备注（AI 总结会带「记录于几点」）
+        const noteEl = document.createElement('span');
+        noteEl.className = 'note';
+        noteEl.textContent = it.note;
+        textEl.appendChild(noteEl);
+      }
+
+      // 分类标签（有分类才显示彩色标签）
+      const cat = catById(it.category);
+      if (cat) {
+        const tagEl = li.querySelector('.tag');
+        tagEl.textContent = cat.name;
+        tagEl.style.background = cat.color;
+        tagEl.style.display = '';
+      }
+      // 提醒标签（⏰ 15:30，点它清除提醒）
+      if (it.remindAt && !it.done) {
+        const remEl = li.querySelector('.rem');
+        const d = new Date(it.remindAt);
+        remEl.textContent = '⏰ ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+        remEl.style.display = '';
+        remEl.title = it.remindAt <= Date.now() ? '提醒已到点（点击清除）' : '提醒时间（点击清除）';
+        remEl.addEventListener('click', (e) => { e.stopPropagation(); it.remindAt = null; it.reminded = false; save(); renderAll(); });
+      }
+
+      // 截止日期标签（点它清除截止日期）
+      const dueEl = li.querySelector('.due');
+      const info = dueInfo(it.due);
+      if (info) {
+        dueEl.textContent = info.label;
+        dueEl.className = 'due ' + info.cls;
+        dueEl.title = '点击清除截止日期';
+        dueEl.style.display = '';
+        dueEl.addEventListener('click', (e) => { e.stopPropagation(); clearDue(it.id); });
+      }
+
+      // 绑定各元素点击。★ stopPropagation 防止冒泡到 li（li 点击=切换完成态）
+      li.querySelector('.check').addEventListener('click', (e) => { e.stopPropagation(); toggle(it.id); });
+      li.addEventListener('click', () => toggle(it.id));   // 点整行 = 完成/取消
+      li.querySelector('.prio').addEventListener('click', (e) => { e.stopPropagation(); cyclePrio(it.id); });
+      li.querySelector('.edit').addEventListener('click', (e) => { e.stopPropagation(); startEdit(it, li); });
+      li.querySelector('.del').addEventListener('click', (e) => { e.stopPropagation(); remove(it.id); });
+
+      list.appendChild(li);
+    });
+
+    // 空状态 / 计数 / 清除按钮 / 进度条
+    empty.style.display = vs.length ? 'none' : 'block';
+    const active = items.filter(i => !i.done).length;
+    count.textContent = `${active} 项未完成`;
+    $('#clearBtn').style.visibility = items.some(i => i.done) ? 'visible' : 'hidden';
+    const total = items.length;
+    $('#progressFill').style.width = (total ? (total - active) / total * 100 : 0) + '%';
+  }
+
+  // 渲染桌贴列表（只显示未完成的，比主窗口精简）
+  function renderWidget() {
+    const active = sortItems(items.filter(i => !i.done));
+    wList.innerHTML = '';
+
+    active.forEach(it => {
+      const li = document.createElement('li');
+      li.className = 'item';
+      const cat = catById(it.category);
+      li.innerHTML = `
+        <span class="check">${checkSVG()}</span>
+        <span class="prio p${it.priority}" title="${PRIO[it.priority].name}"></span>
+        ${cat ? `<span class="cat-dot" style="background:${cat.color}"></span>` : ''}
+        <span class="text"></span>
+        <button class="del" title="删除">×</button>
+      `;
+      li.querySelector('.text').textContent = it.text;
+      li.querySelector('.check').addEventListener('click', (e) => { e.stopPropagation(); toggle(it.id); });
+      li.addEventListener('click', () => toggle(it.id));
+      li.querySelector('.prio').addEventListener('click', (e) => { e.stopPropagation(); cyclePrio(it.id); });
+      li.querySelector('.del').addEventListener('click', (e) => { e.stopPropagation(); remove(it.id); });
+      wList.appendChild(li);
+    });
+
+    wEmpty.style.display = active.length ? 'none' : 'grid';
+    wCount.textContent = `${active.length} 项待办`;
+  }
+
+  // 主窗口 + 桌贴一起重渲染
+  function renderAll() { render(); renderWidget(); }
+
+  // ---------- 主题 ----------
+  const themeBtn = $('#themeBtn');
+  // 初始主题：优先读存储的，否则跟随系统偏好
+  let theme = localStorage.getItem(KEY_THEME)
+    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  function applyTheme() {
+    document.documentElement.setAttribute('data-theme', theme);   // 改根元素属性，CSS 变量随之切换
+    themeBtn.innerHTML = theme === 'dark' ? ICONS.sun : ICONS.moon;   // 深色时显示太阳（点它变浅色）
+    // ★ 关键：同步主进程 nativeTheme。
+    //   原因：原生 <select> 下拉弹层是 Windows 原生绘制，只改 CSS 不会变深色，
+    //   必须让 Electron 的 nativeTheme 也跟着变。
+    if (window.api && window.api.setTheme) window.api.setTheme(theme);
+  }
+  themeBtn.addEventListener('click', () => {
+    theme = theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(KEY_THEME, theme);
+    applyTheme();
+  });
+  applyTheme();
+
+  // ---------- 设置 ----------
+  const KEY_SETTINGS = 'todo.settings.v1';
+  const SETTINGS_DEFAULTS = { mainOpacity: 0.42, mainBlur: 10, widgetOpacity: 0.65, widgetFrost: 0, remindLead: 30, scKey: '' };
+  function loadSettings() {
+    let s = {};
+    try { s = JSON.parse(localStorage.getItem(KEY_SETTINGS)) || {}; } catch {}
+    // 迁移：旧版桌贴透明度单独存 KEY_WOPACITY，新版并入 settings，这里做一次迁移
+    if (s.widgetOpacity == null) {
+      const old = parseFloat(localStorage.getItem(KEY_WOPACITY));
+      s.widgetOpacity = isNaN(old) ? SETTINGS_DEFAULTS.widgetOpacity : old;
+    }
+    return Object.assign({}, SETTINGS_DEFAULTS, s);   // 默认值兜底，用户值覆盖
+  }
+  function saveSettings() { localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings)); }
+  let settings = loadSettings();
+
+  // 把 settings 里的值应用到 CSS 变量上（透明度/磨砂）
+  function applySettings() {
+    const root = document.documentElement;
+    root.style.setProperty('--glass-alpha', settings.mainOpacity);
+    root.style.setProperty('--app-blur', settings.mainBlur + 'px');
+    const w = document.querySelector('.widget-ui');
+    w.style.setProperty('--w-alpha', settings.widgetOpacity);
+    w.style.setProperty('--w-frost', settings.widgetFrost);
+  }
+  // 把 settings 同步到设置面板的各个控件上
+  function syncSettingsUI() {
+    const mo = Math.round(settings.mainOpacity * 100);
+    $('#mainOpacity').value = mo;
+    $('#mainOpacityVal').textContent = mo + '%';
+    $('#mainBlur').value = settings.mainBlur;
+    $('#mainBlurVal').textContent = settings.mainBlur + 'px';
+    const wo = Math.round(settings.widgetOpacity * 100);
+    $('#widgetOpacity').value = wo;
+    $('#widgetOpacityVal').textContent = wo + '%';
+    $('#wOpacity').value = wo;
+    const wf = Math.round(settings.widgetFrost * 100);
+    $('#widgetFrost').value = wf;
+    $('#widgetFrostVal').textContent = wf + '%';
+    $('#remindLead').value = settings.remindLead;
+    $('#scKey').value = settings.scKey || '';
+  }
+  function resetSettings() {
+    settings = Object.assign({}, SETTINGS_DEFAULTS);
+    saveSettings();
+    applySettings();
+    syncSettingsUI();
+  }
+
+  // ---------- 事件（主窗口） ----------
+  // 添加按钮 / 回车添加；加完清空输入框
+  $('#addBtn').addEventListener('click', () => { add(input.value); input.value = ''; $('#remindInput').value = ''; });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { add(input.value); input.value = ''; $('#remindInput').value = ''; } });
+
+  // 三个筛选标签切换
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      filter = tab.dataset.filter;   // 从 data-filter 属性读「all/active/done」
+      render();
+    });
+  });
+
+  $('#clearBtn').addEventListener('click', clearDone);
+
+  // ---------- 事件（桌贴） ----------
+  // 桌贴快速添加：显式传 null（不识别时间、无分类），优先级 0
+  $('#wAdd').addEventListener('click', () => { add(wInput.value, 0, null, null, null); wInput.value = ''; });
+  wInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { add(wInput.value, 0, null, null, null); wInput.value = ''; } });
+
+  // 桌贴透明度滑块
+  const wOpacity = $('#wOpacity');
+  wOpacity.value = Math.round(settings.widgetOpacity * 100);
+  wOpacity.addEventListener('input', () => {
+    settings.widgetOpacity = wOpacity.value / 100;
+    saveSettings();
+    applySettings();
+  });
+
+  // 桌贴按钮：置顶 / 关闭 / 打开主窗口（都通过 IPC 交给主进程）
+  $('#wPin').addEventListener('click', () => {
+    const btn = $('#wPin');
+    const next = !btn.classList.contains('active');
+    btn.classList.toggle('active', next);
+    if (window.api) window.api.widgetTogglePin();
+  });
+  $('#wClose').addEventListener('click', () => { if (window.api) window.api.widgetClose(); });
+  $('#wOpenMain').addEventListener('click', () => { if (window.api) window.api.widgetOpenMain(); });
+
+  // 初始化按钮图标（塞 SVG）
+  $('#widgetBtn').innerHTML = ICONS.pin;
+  $('#wOpenMain').innerHTML = ICONS.maximize;
+  $('#wPin').innerHTML = ICONS.pin;
+  $('#wClose').innerHTML = ICONS.close;
+
+  // ---------- 桌贴锁定 ----------
+  const KEY_WLOCKED = 'todo.widget.locked.v1';
+  let locked = localStorage.getItem(KEY_WLOCKED) === '1';   // 记住上次锁定状态
+  const wLockBtn = $('#wLock');
+  function applyLock() {
+    document.getElementById('widgetUI').classList.toggle('locked', locked);
+    wLockBtn.innerHTML = locked ? ICONS.lock : ICONS.unlock;
+    wLockBtn.title = locked ? '解锁' : '锁定';
+    localStorage.setItem(KEY_WLOCKED, locked ? '1' : '0');
+    if (window.api) window.api.widgetSetLocked(locked);   // 通知主进程设置窗口可调大小
+  }
+  wLockBtn.addEventListener('click', () => { locked = !locked; applyLock(); });
+  applyLock();
+
+  // ---------- 桌面端（Electron）才有的能力 ----------
+  if (window.api) {
+    // 显示桌贴按钮，点它经 IPC 打开桌贴窗口
+    $('#widgetBtn').style.display = '';
+    $('#widgetBtn').addEventListener('click', () => window.api.toggleWidget());
+    // 订阅桌贴状态（置顶/穿透），同步到 UI
+    window.api.onWidgetState((s) => {
+      $('#wPin').classList.toggle('active', !!s.pinned);
+      const ct = !!s.clickThrough;
+      document.getElementById('widgetUI').classList.toggle('click-through', ct);
+      document.querySelector('.w-title').textContent = ct ? '待办清单 · 穿透中' : '待办清单';
+    });
+  }
+
+  // ---------- 跨窗口同步 ----------
+  // 主窗口和桌贴是两个独立窗口（各自一份 localStorage）。
+  // 浏览器/Electron 的 storage 事件会在「另一个窗口改 localStorage」时触发，
+  // 借此让两个窗口数据保持一致。
+  window.addEventListener('storage', (e) => {
+    if (e.key === KEY) { items = load(); renderAll(); }
+    else if (e.key === KEY_SETTINGS) { settings = loadSettings(); applySettings(); syncSettingsUI(); }
+    else if (e.key === KEY_CATS) { categories = loadCategories(); renderCatSelect(); renderCatChips(); renderAll(); }
+  });
+
+  // 桌贴窗口：给 body 加 widget 类，切换成桌贴皮肤
+  if (IS_WIDGET) document.body.classList.add('widget');
+
+  // ---------- 分类初始化 ----------
+  renderCatSelect();
+  renderCatChips();
+  renderCatManager();
+  $('#catAdd').addEventListener('click', () => {
+    categories.push({ id: 'c' + Date.now(), name: '新分类', color: '#5b6cff' });   // 新分类默认蓝色
+    saveCategories();
+    renderCatManager();
+    renderCatSelect();
+    renderCatChips();
+    renderAll();
+  });
+
+  $('#date').textContent = today();
+  renderAll();
+
+  // ---------- 灵动岛提醒 ----------
+  let islandTimer = null;
+  function showIsland(icon, text, hold) {
+    if (IS_WIDGET) return;   // 桌贴不显示灵动岛
+    const body = $('#islandBody');
+    body.innerHTML = '<span class="ic"></span><span class="txt"></span>';
+    body.querySelector('.ic').textContent = icon;
+    body.querySelector('.txt').textContent = text;
+    $('#island').classList.add('show');
+    clearTimeout(islandTimer);
+    islandTimer = setTimeout(() => $('#island').classList.remove('show'), hold || 3000);   // 3 秒后收回
+  }
+  // 启动时提示「今天有几项到期」
+  function remindDue() {
+    const due = items.filter(i => !i.done && i.due && ['today', 'overdue'].includes(dueInfo(i.due).cls));
+    if (!due.length) return;
+    const over = due.filter(i => dueInfo(i.due).cls === 'overdue').length;
+    showIsland('⏰', over ? (due.length + ' 项待办已到期/今天') : (due.length + ' 项待办今天到期'), 4600);
+  }
+  if (!IS_WIDGET) remindDue();
+
+  // 读提醒时间输入框（datetime-local → 毫秒时间戳）
+  function readRemind() {
+    const v = $('#remindInput').value;
+    return v ? new Date(v).getTime() : null;
+  }
+
+  // ★ 定时检查提醒：每 20 秒扫一遍，到点且未提醒过的 → 发系统通知 + 微信推送 + 灵动岛
+  function checkReminders() {
+    const now = Date.now();
+    let fired = false;
+    items.forEach(it => {
+      if (!it.done && it.remindAt && it.remindAt <= now && !it.reminded) {
+        it.reminded = true;   // 标记已提醒，避免重复
+        fired = true;
+        if (window.api && window.api.notify) window.api.notify('待办提醒', it.text);   // 系统通知
+        if (window.api && window.api.scPush && settings.scKey) {                       // 微信推送（配了 SendKey 才发）
+          window.api.scPush(settings.scKey, '待办提醒', it.text + (it.due ? '（截止 ' + it.due + '）' : ''));
+        }
+        showIsland('⏰', '提醒：' + it.text, 5000);
+      }
+    });
+    if (fired) { save(); renderAll(); }
+  }
+  if (!IS_WIDGET) {
+    checkReminders();
+    setInterval(checkReminders, 20000);   // 每 20 秒检查一次
+  }
+
+  // ---------- 窗口控制（无边框） ----------
+  if (window.api) {
+    $('#winMin').addEventListener('click', () => window.api.minimize());
+    $('#winMax').addEventListener('click', () => window.api.toggleMaximize());
+    $('#winClose').addEventListener('click', () => window.api.close());
+    // 订阅最大化状态，切换 □ / ❐ 图标
+    window.api.onMaximizeChange((max) => {
+      $('#winMax').textContent = max ? '❐' : '□';
+      $('#winMax').title = max ? '还原' : '最大化';
+    });
+  }
+  // 双击标题栏空白处 = 最大化/还原（closest('.tb-btn') 排除点到按钮的情况）
+  document.querySelector('.titlebar').addEventListener('dblclick', (e) => {
+    if (e.target.closest('.tb-btn')) return;
+    if (window.api) window.api.toggleMaximize();
+  });
+
+  // ---------- 设置界面 ----------
+  $('#settingsBtn').innerHTML = ICONS.gear;
+  const settingsOverlay = $('#settingsOverlay');
+  $('#settingsBtn').addEventListener('click', () => { settingsOverlay.classList.add('open'); loadAutoOpenUI(); loadCloudUI(); });
+  $('#settingsClose').addEventListener('click', () => settingsOverlay.classList.remove('open'));
+  // 点遮罩空白处（不是 .settings 本身）也关闭
+  settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOverlay) settingsOverlay.classList.remove('open'); });
+  // 各滑块：改动即保存并应用
+  $('#mainOpacity').addEventListener('input', (e) => { settings.mainOpacity = e.target.value / 100; saveSettings(); applySettings(); syncSettingsUI(); });
+  $('#mainBlur').addEventListener('input', (e) => { settings.mainBlur = +e.target.value; saveSettings(); applySettings(); syncSettingsUI(); });
+  $('#widgetOpacity').addEventListener('input', (e) => { settings.widgetOpacity = e.target.value / 100; saveSettings(); applySettings(); syncSettingsUI(); });
+  $('#widgetFrost').addEventListener('input', (e) => { settings.widgetFrost = e.target.value / 100; saveSettings(); applySettings(); syncSettingsUI(); });
+  // 提醒提前量：change 时（失焦才触发）校验并 clamp 到 0~720
+  $('#remindLead').addEventListener('change', () => {
+    let v = parseInt($('#remindLead').value, 10);
+    if (isNaN(v)) v = 30;
+    v = Math.max(0, Math.min(720, v));   // clamp 到 [0, 720]
+    settings.remindLead = v;
+    saveSettings();
+    syncSettingsUI();
+  });
+  $('#scKey').addEventListener('change', () => {
+    settings.scKey = $('#scKey').value.trim();
+    saveSettings();
+  });
+  $('#resetSettings').addEventListener('click', resetSettings);
+
+  applySettings();
+  syncSettingsUI();
+
+  // ---------- AI 总结 ----------
+  // 主进程总结完选中文字后，会推 summarize-result 事件过来，这里把结果加进待办
+  function addSummarizedItem(r) {
+    // 从总结文本里解析时间，与手动添加一致：识别到时间才写入 due / remindAt
+    const auto = parseTime(r.summary);
+    items.unshift({
+      id: Date.now() + Math.random(),
+      text: r.summary,
+      done: false,
+      priority: 0,
+      due: (auto && auto.due) || null,
+      category: null,
+      remindAt: (auto && auto.remindAt) || null,
+      reminded: false,
+      createdAt: Date.now(),
+      note: '记录于 ' + r.capturedAt + ' · 原文 ' + r.originalLen + ' 字' + (r.offline ? ' · 离线' : ''),   // 备注：几点记录的
+    });
+    save();
+    renderAll();
+    if (auto && auto.remindAt) showIsland('⏰', '已总结，' + fmtDateTime(auto.remindAt) + ' 提醒' + (auto.deadline ? '（' + fmtDateTime(auto.deadline) + ' 截止）' : ''));
+    else showIsland('✅', '已总结并加入待办');
+  }
+  // 打开设置时加载 AI 配置到表单
+  async function loadAIConfigUI() {
+    if (!window.api || !window.api.getAIConfig) return;
+    try {
+      const c = await window.api.getAIConfig();
+      $('#aiKey').value = c.apiKey || '';
+      $('#aiBase').value = c.baseURL || '';
+      $('#aiModel').value = c.model || '';
+      $('#aiMode').value = (c.mode && c.mode !== 'offline') ? c.mode : 'auto';
+    } catch {}
+  }
+  $('#aiSave').addEventListener('click', () => {
+    if (!window.api || !window.api.setAIConfig) return;
+    window.api.setAIConfig({
+      apiKey: $('#aiKey').value.trim(),
+      baseURL: $('#aiBase').value.trim() || 'https://api.deepseek.com',
+      model: $('#aiModel').value.trim() || 'deepseek-chat',
+      mode: $('#aiMode').value,
+    });
+    showIsland('✅', 'AI 设置已保存');
+    settingsOverlay.classList.remove('open');
+  });
+  if (window.api) {
+    window.api.onSummarizeStart(() => showIsland('🤖', '正在总结选中文字…', 12000));   // 主进程说「开始了」
+    window.api.onSummarizeResult((r) => { addSummarizedItem(r); });                    // 主进程说「出结果了」
+    window.api.onSummarizeError((msg) => showIsland('⚠️', msg, 5000));
+  }
+  loadAIConfigUI();
+
+  // ---------- 开机自动打开桌贴 ----------
+  async function loadAutoOpenUI() {
+    if (!window.api || !window.api.getAutoOpenWidget) return;
+    try { $('#autoOpenWidget').checked = await window.api.getAutoOpenWidget(); } catch {}
+  }
+  $('#autoOpenWidget').addEventListener('change', (e) => {
+    if (window.api) window.api.setAutoOpenWidget(e.target.checked);
+  });
+  loadAutoOpenUI();
+
+  // ---------- 云端同步（Gitee） ----------
+  // 原理：把 { items, categories, updatedAt } 编码成 base64，存到 Gitee 仓库单个文件。
+  // 渲染进程直接 fetch Gitee REST API（Gitee 的 API 自带跨域头，浏览器可直接调）。
+  const KEY_CLOUD = 'todo.gitee.v1';
+  const GITEE_PATH = 'todo-sync.json';
+  const CLOUD_DEFAULTS = { owner: '', repo: '', token: '', autoSync: false };
+  function loadCloud() {
+    let c = {};
+    try { c = JSON.parse(localStorage.getItem(KEY_CLOUD)) || {}; } catch {}
+    return Object.assign({}, CLOUD_DEFAULTS, c);
+  }
+  function saveCloud() { localStorage.setItem(KEY_CLOUD, JSON.stringify(cloud)); }
+  let cloud = loadCloud();
+  let suppressPush = false;   // 拉取时临时关闭自动推送，避免「拉完又推回去」的回环
+  let pushTimer = null;       // 防抖定时器
+
+  function cloudReady() { return !!(cloud.owner && cloud.repo && cloud.token); }
+
+  // 拼 Gitee 接口：读/写仓库里的一个文件，access_token 走查询参数认证
+  function giteeApi(verb, body) {
+    const url = 'https://gitee.com/api/v5/repos/' + encodeURIComponent(cloud.owner) +
+      '/' + encodeURIComponent(cloud.repo) + '/contents/' + GITEE_PATH +
+      '?access_token=' + encodeURIComponent(cloud.token);
+    const opts = { method: verb };
+    if (body) { opts.headers = { 'Content-Type': 'application/json' }; opts.body = JSON.stringify(body); }
+    return fetch(url, opts);
+  }
+
+  // base64 编码（UTF-8 安全）。因为 btoa 只认 Latin1，中文要先转字节。
+  function b64encode(str) {
+    const bytes = new TextEncoder().encode(str);   // 字符串 → UTF-8 字节
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);   // 字节 → Latin1 字符串
+    return btoa(bin);   // 再 base64
+  }
+  // base64 解码（对称还原成 UTF-8 字符串）
+  function b64decode(b64) {
+    const bin = atob(String(b64).replace(/\s/g, ''));   // 去掉空白再解码
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder('utf-8').decode(bytes);   // 字节 → 字符串
+  }
+
+  // 防抖推送：每次 save 后延迟 2 秒再推，连续保存只推最后一次
+  function scheduleCloudPush() {
+    if (!cloud.autoSync || !cloudReady() || suppressPush) return;   // 没开自动同步/配置不全/正在拉取 → 不推
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => pushCloud(false), 2000);
+  }
+
+  // 推送到云端
+  async function pushCloud(showFeedback) {
+    if (!cloudReady()) { showIsland('⚠️', '请先在设置里填写 Gitee 用户名/仓库/令牌', 5000); return; }
+    try {
+      const content = b64encode(JSON.stringify({ items, categories, updatedAt: Date.now() }));
+      // Gitee 写文件规则：先 GET 拿到当前 sha；有 sha 用 PUT（更新），没 sha 用 POST（新建）
+      let sha = null;
+      const head = await giteeApi('GET');
+      if (head.ok) { const j = await head.json(); if (j && !Array.isArray(j) && j.sha) sha = j.sha; }
+      const body = { content, message: 'sync ' + new Date().toLocaleString('zh-CN') };
+      if (sha) body.sha = sha;
+      const res = await giteeApi(sha ? 'PUT' : 'POST', body);
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error('HTTP ' + res.status + (e.message ? ' ' + e.message : ''));
+      }
+      if (showFeedback) showIsland('☁️', '已同步到 Gitee');
+    } catch (err) {
+      showIsland('⚠️', '云端同步失败：' + (err && err.message ? err.message : err), 5000);
+    }
+  }
+
+  // 从云端拉取（覆盖本地，需确认）
+  async function pullCloud() {
+    if (!cloudReady()) { showIsland('⚠️', '请先在设置里填写 Gitee 用户名/仓库/令牌', 5000); return; }
+    try {
+      const res = await giteeApi('GET');
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error('HTTP ' + res.status + (e.message ? ' ' + e.message : ''));
+      }
+      const j = await res.json();
+      // Gitee 读不存在的文件返回 []（而不是 404），所以要 Array.isArray 判空
+      if (!j || Array.isArray(j) || !j.content) { showIsland('⚠️', '云端还没有数据', 5000); return; }
+      const d = JSON.parse(b64decode(j.content));
+      if (!d || !Array.isArray(d.items)) { showIsland('⚠️', '云端数据格式异常', 5000); return; }
+      if (!confirm('用云端数据覆盖本地？\n云端待办 ' + d.items.length + ' 项，本地 ' + items.length + ' 项')) return;
+      suppressPush = true;   // 拉取期间抑制自动推送，防回环
+      items = d.items;
+      if (Array.isArray(d.categories) && d.categories.length) categories = d.categories;
+      save();
+      saveCategories();
+      renderAll();
+      renderCatSelect();
+      renderCatChips();
+      suppressPush = false;
+      showIsland('✅', '已从云端拉取');
+    } catch (err) {
+      showIsland('⚠️', '云端拉取失败：' + (err && err.message ? err.message : err), 5000);
+    }
+  }
+
+  // 打开设置时把 cloud 配置填进表单
+  function loadCloudUI() {
+    $('#cloudUrl').value = cloud.owner || '';
+    $('#cloudKey').value = cloud.repo || '';
+    $('#cloudSyncKey').value = cloud.token || '';
+    $('#cloudAuto').checked = !!cloud.autoSync;
+  }
+  // 从表单读配置存起来
+  function saveCloudFromUI() {
+    cloud.owner = $('#cloudUrl').value.trim();
+    cloud.repo = $('#cloudKey').value.trim();
+    cloud.token = $('#cloudSyncKey').value.trim();
+    cloud.autoSync = $('#cloudAuto').checked;
+    saveCloud();
+  }
+  ['#cloudUrl', '#cloudKey', '#cloudSyncKey'].forEach(sel => {
+    $(sel).addEventListener('change', saveCloudFromUI);
+  });
+  $('#cloudAuto').addEventListener('change', saveCloudFromUI);
+  $('#cloudPush').addEventListener('click', () => { saveCloudFromUI(); pushCloud(true); });
+  $('#cloudPull').addEventListener('click', () => { saveCloudFromUI(); pullCloud(); });
+</script>
+</body>
+</html>

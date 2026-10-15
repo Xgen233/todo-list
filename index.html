@@ -1,0 +1,1791 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>待办清单</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg-tint: rgba(245, 246, 250, 0.55);
+    --text: #1f2430;
+    --text-muted: #8a90a2;
+    --accent: #5b6cff;
+    --accent-2: #8a5bff;
+    --accent-soft: rgba(91, 108, 255, 0.16);
+    --line: rgba(31, 36, 48, 0.14);
+    --input-bg: rgba(255, 255, 255, 0.6);
+    --hover: rgba(255, 255, 255, 0.55);
+    --danger: #ff5c5c;
+    --danger-soft: rgba(255, 92, 92, 0.16);
+    --glass-rgb: 255, 255, 255;
+    --glass-alpha: 0.42;
+    --glass-bg: rgba(var(--glass-rgb), var(--glass-alpha));
+    --app-blur: 10px;
+    --glass-border: rgba(255, 255, 255, 0.7);
+    --glass-highlight: rgba(255, 255, 255, 0.85);
+    --glass-shadow: 0 24px 60px -20px rgba(60, 70, 120, 0.35);
+    --blob-1: rgba(99, 102, 241, 0.55);
+    --blob-2: rgba(168, 85, 247, 0.45);
+    --blob-3: rgba(34, 211, 238, 0.4);
+    --blob-4: rgba(244, 63, 94, 0.32);
+  }
+
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg-tint: rgba(16, 18, 26, 0.55);
+    --text: #e8eaf1;
+    --text-muted: #9aa1b8;
+    --accent: #7c8bff;
+    --accent-2: #b07bff;
+    --accent-soft: rgba(124, 139, 255, 0.22);
+    --line: rgba(255, 255, 255, 0.12);
+    --input-bg: rgba(255, 255, 255, 0.07);
+    --hover: rgba(255, 255, 255, 0.08);
+    --danger: #ff6b6b;
+    --danger-soft: rgba(255, 107, 107, 0.2);
+    --glass-rgb: 26, 28, 38;
+    --glass-bg: rgba(var(--glass-rgb), var(--glass-alpha));
+    --glass-border: rgba(255, 255, 255, 0.14);
+    --glass-highlight: rgba(255, 255, 255, 0.14);
+    --glass-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.6);
+    --blob-1: rgba(99, 102, 241, 0.5);
+    --blob-2: rgba(168, 85, 247, 0.42);
+    --blob-3: rgba(34, 211, 238, 0.38);
+    --blob-4: rgba(244, 63, 94, 0.3);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    background: var(--bg-tint);
+    color: var(--text);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 40px 20px;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    transition: background .3s ease;
+  }
+
+  /* ---------- 流光背景 ---------- */
+  .bg { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+  .blob { position: absolute; border-radius: 50%; filter: blur(60px); }
+  .b1 { width: 46vw; height: 46vw; background: radial-gradient(circle, var(--blob-1), transparent 70%); top: -12vw; left: -8vw; animation: drift1 26s ease-in-out infinite alternate; }
+  .b2 { width: 42vw; height: 42vw; background: radial-gradient(circle, var(--blob-2), transparent 70%); bottom: -14vw; right: -8vw; animation: drift2 32s ease-in-out infinite alternate; }
+  .b3 { width: 34vw; height: 34vw; background: radial-gradient(circle, var(--blob-3), transparent 70%); top: 30%; left: 50%; animation: drift3 22s ease-in-out infinite alternate; }
+  .b4 { width: 24vw; height: 24vw; background: radial-gradient(circle, var(--blob-4), transparent 70%); bottom: 16%; left: 10%; animation: drift4 28s ease-in-out infinite alternate; }
+  @keyframes drift1 { to { transform: translate(9vw, 7vw) scale(1.15); } }
+  @keyframes drift2 { to { transform: translate(-8vw, -8vw) scale(1.1); } }
+  @keyframes drift3 { to { transform: translate(-10vw, 9vw) scale(0.92); } }
+  @keyframes drift4 { to { transform: translate(7vw, -9vw) scale(1.2); } }
+
+  /* ---------- 自定义标题栏（无边框窗口） ---------- */
+  .titlebar {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 40px;
+    display: flex;
+    justify-content: flex-end;
+    align-items: stretch;
+    z-index: 20;
+    -webkit-app-region: drag;
+  }
+  .tb-btn {
+    -webkit-app-region: no-drag;
+    width: 46px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .tb-btn:hover { background: var(--hover); color: var(--text); }
+  .tb-close:hover { background: #e81123; color: #fff; }
+
+  /* ---------- 灵动岛提醒 ---------- */
+  .island {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translate(-50%, -130%);
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 16px 9px 12px;
+    border-radius: 999px;
+    background: rgba(10, 11, 16, 0.92);
+    color: #fff;
+    font-size: 13px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+    transition: transform .5s cubic-bezier(.22, 1.4, .36, 1);
+    pointer-events: none;
+    max-width: calc(100vw - 40px);
+  }
+  .island.show { transform: translate(-50%, 10px); }
+  .island-dot {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: #000;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+    flex-shrink: 0;
+  }
+  .island-body { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .island-body .ic { font-size: 15px; flex-shrink: 0; }
+  .island-body .txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+
+  .app {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 540px;
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: blur(var(--app-blur)) saturate(140%);
+    backdrop-filter: blur(var(--app-blur)) saturate(140%);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+    padding: 30px 30px 26px;
+    animation: rise .55s cubic-bezier(.22, 1, .36, 1);
+    transition: background .3s ease, border-color .3s ease;
+  }
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 22px;
+  }
+
+  .header .date {
+    font-size: 13px;
+    color: var(--text-muted);
+    letter-spacing: .02em;
+    margin-bottom: 6px;
+  }
+
+  .header h1 {
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: -.01em;
+  }
+
+  .header h1 .dot { color: var(--accent); }
+
+  .header-actions { display: flex; gap: 8px; }
+
+  .icon-btn {
+    border: 1px solid var(--line);
+    background: var(--input-bg);
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    font-size: 18px;
+    cursor: pointer;
+    transition: background .18s, transform .08s;
+    display: grid;
+    place-items: center;
+  }
+  .icon-btn:hover { background: var(--hover); }
+  .icon-btn:active { transform: scale(.94); }
+  .icon-btn svg { width: 18px; height: 18px; }
+
+  .progress {
+    height: 5px;
+    border-radius: 999px;
+    background: var(--hover);
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    transition: width .5s cubic-bezier(.22, 1, .36, 1);
+  }
+
+  .add-row { display: flex; gap: 10px; margin-bottom: 10px; }
+
+  .add-row input {
+    flex: 1;
+    border: 1.5px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 16px;
+    font-size: 15px;
+    color: var(--text);
+    background: var(--input-bg);
+    outline: none;
+    transition: border-color .18s, box-shadow .18s;
+  }
+  .add-row input::placeholder { color: var(--text-muted); }
+  .add-row input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-soft);
+  }
+
+  .add-btn {
+    border: none;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 0 22px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: filter .18s, transform .08s;
+  }
+  .add-btn:hover { filter: brightness(1.06); }
+  .add-btn:active { transform: scale(.96); }
+
+  .opts { display: flex; gap: 8px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
+
+  .opts select, .opts input[type="date"], .opts input[type="datetime-local"] {
+    border: 1px solid var(--line);
+    background: var(--input-bg);
+    color: var(--text);
+    font-size: 13px;
+    padding: 7px 10px;
+    border-radius: 10px;
+    outline: none;
+    transition: border-color .18s;
+  }
+  .opts select:focus, .opts input[type="date"]:focus, .opts input[type="datetime-local"]:focus { border-color: var(--accent); }
+  .opts .opt-label { font-size: 13px; color: var(--text-muted); }
+  html[data-theme="dark"] select option { background: #1e2029; color: #e8eaf1; }
+
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+
+  .tab {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 14px;
+    font-weight: 500;
+    padding: 7px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .18s, color .18s;
+  }
+  .tab:hover { background: var(--hover); }
+  .tab.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+
+  /* ---------- 分类标签 / 筛选 ---------- */
+  .cats { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+
+  .cat-chip {
+    border: 1px solid var(--line);
+    background: var(--input-bg);
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background .18s, color .18s, border-color .18s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cat-chip:hover { background: var(--hover); }
+  .cat-chip.active { background: var(--accent-soft); color: var(--accent); border-color: transparent; font-weight: 600; }
+  .cat-chip .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+
+  .tag {
+    flex-shrink: 0;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: #fff;
+    font-weight: 600;
+    letter-spacing: .01em;
+    white-space: nowrap;
+  }
+
+  .cat-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  .rem {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 999px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    background: var(--accent-soft);
+    color: var(--accent);
+    cursor: pointer;
+  }
+  html[data-theme="dark"] .rem { color: #aeb9ff; }
+
+  /* 分类管理 */
+  .cat-manager { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .cat-row { display: flex; align-items: center; gap: 8px; }
+  .cat-row input[type="color"] {
+    width: 30px; height: 30px; padding: 0; flex-shrink: 0;
+    border: 1px solid var(--line); border-radius: 8px; background: transparent; cursor: pointer;
+  }
+  .cat-row .set-input { flex: 1; }
+  .cat-del {
+    border: none; background: transparent; color: var(--text-muted); font-size: 16px;
+    width: 28px; height: 28px; border-radius: 8px; cursor: pointer; flex-shrink: 0;
+    transition: color .15s, background .15s;
+  }
+  .cat-del:hover { color: var(--danger); background: var(--danger-soft); }
+  .cat-add {
+    margin-top: 8px; width: 100%;
+    border: 1px dashed var(--line); background: transparent; color: var(--text-muted);
+    font-size: 13px; padding: 8px; border-radius: 10px; cursor: pointer;
+    transition: color .15s, background .15s;
+  }
+  .cat-add:hover { color: var(--accent); background: var(--accent-soft); }
+
+  .list { list-style: none; }
+
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 11px 10px;
+    border-radius: 14px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background .18s, border-color .18s, transform .18s;
+    animation: rise .32s cubic-bezier(.22, 1.2, .36, 1);
+  }
+  .item:hover { background: var(--hover); border-color: var(--line); transform: translateY(-1px); }
+  .item + .item { margin-top: 2px; }
+
+  .check {
+    width: 22px;
+    height: 22px;
+    border: 2px solid #d3d7e2;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    transition: background .18s, border-color .18s, box-shadow .18s;
+  }
+  html[data-theme="dark"] .check { border-color: #4a5064; }
+
+  .check svg {
+    width: 12px;
+    height: 12px;
+    opacity: 0;
+    transform: scale(.4);
+    transition: opacity .18s, transform .18s;
+  }
+  .check svg polyline { stroke-dasharray: 30; stroke-dashoffset: 30; }
+  .item.done .check {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    border-color: transparent;
+    box-shadow: 0 4px 14px var(--accent-soft);
+    animation: pop .3s cubic-bezier(.22, 1, .36, 1);
+  }
+  .item.done .check svg { opacity: 1; transform: scale(1); }
+  .item.done .check svg polyline { animation: draw .32s ease forwards; }
+  @keyframes pop { 50% { transform: scale(1.16); } }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+
+  .prio {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: transform .15s;
+  }
+  .prio:hover { transform: scale(1.25); }
+  .prio.p0 { border: 1.5px solid #d3d7e2; background: transparent; }
+  html[data-theme="dark"] .prio.p0 { border-color: #4a5064; }
+  .prio.p1 { background: #2fbf71; }
+  .prio.p2 { background: #f5a623; }
+  .prio.p3 { background: #ff5c5c; }
+
+  .item .text {
+    flex: 1;
+    font-size: 15px;
+    line-height: 1.4;
+    word-break: break-word;
+    transition: color .2s;
+  }
+  .item.done .text {
+    color: var(--text-muted);
+    text-decoration: line-through;
+    text-decoration-color: #c4c8d4;
+  }
+  .item .note {
+    display: block;
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    opacity: .85;
+  }
+
+  .due {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    flex-shrink: 0;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .due.far { background: var(--hover); color: var(--text); }
+  .due.soon { background: #fff3e0; color: #e08900; }
+  .due.today { background: #fff3e0; color: #e08900; font-weight: 700; }
+  .due.overdue { background: var(--danger-soft); color: var(--danger); font-weight: 700; }
+  html[data-theme="dark"] .due.soon,
+  html[data-theme="dark"] .due.today { background: #3a2f1c; color: #ffb02e; }
+
+  .del {
+    border: none;
+    background: transparent;
+    color: #c3c7d4;
+    font-size: 20px;
+    line-height: 1;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .15s, background .15s, color .15s;
+    flex-shrink: 0;
+  }
+  .item:hover .del { opacity: 1; }
+  .del:hover { background: var(--danger-soft); color: var(--danger); }
+
+  .edit {
+    border: none;
+    background: transparent;
+    color: #c3c7d4;
+    font-size: 16px;
+    line-height: 1;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity .15s, background .15s, color .15s;
+    flex-shrink: 0;
+  }
+  .item:hover .edit { opacity: 1; }
+  .edit:hover { background: var(--accent-soft); color: var(--accent); }
+
+  .edit-input {
+    width: 100%;
+    font-size: 15px;
+    line-height: 1.4;
+    color: var(--text);
+    background: var(--input-bg);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 4px 8px;
+    outline: none;
+    font-family: inherit;
+  }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 16px;
+    padding-top: 15px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  .clear-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 8px;
+    transition: color .15s, background .15s;
+  }
+  .clear-btn:hover { color: var(--danger); background: var(--danger-soft); }
+
+  .empty {
+    text-align: center;
+    padding: 42px 20px;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+  .empty .icon { font-size: 40px; margin-bottom: 10px; opacity: .6; }
+
+  /* ---------- 桌贴模式 ---------- */
+  body.widget {
+    background: transparent;
+    padding: 0;
+    align-items: flex-start;
+    justify-content: flex-start;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+  }
+  body.widget .app { display: none; }
+  body.widget .bg { display: none; }
+  body.widget .titlebar { display: none; }
+  body.widget .island { display: none; }
+  body.widget .settings-overlay { display: none; }
+
+  .widget-ui {
+    --w-alpha: 0.65;
+    --w-frost: 0;
+    position: relative;
+    display: none;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    background: rgba(24, 26, 34, var(--w-alpha));
+    color: #e8eaf1;
+    overflow: hidden;
+  }
+  .widget-ui::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, var(--w-frost));
+    pointer-events: none;
+  }
+  body.widget .widget-ui { display: flex; }
+
+  .w-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 8px 6px 12px;
+    -webkit-app-region: drag;
+    cursor: move;
+    flex-shrink: 0;
+  }
+  .w-bar .w-title {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .01em;
+    color: #cdd2e0;
+  }
+  .w-bar .w-drag { flex: 1; }
+
+  .w-btn {
+    -webkit-app-region: no-drag;
+    border: none;
+    background: rgba(255,255,255,0.08);
+    color: #cdd2e0;
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    transition: background .15s;
+  }
+  .w-btn:hover { background: rgba(255,255,255,0.18); }
+  .w-btn.active { background: rgba(109,123,255,0.9); color: #fff; }
+  .w-btn svg { width: 15px; height: 15px; }
+
+  /* 锁定状态：只保留标题 + 锁图标 + 列表 */
+  .widget-ui.locked .w-add,
+  .widget-ui.locked .w-foot,
+  .widget-ui.locked .w-btn { display: none; }
+  .widget-ui.locked #wLock { display: grid; }
+  .widget-ui.locked .w-bar { -webkit-app-region: no-drag; cursor: default; }
+  .widget-ui.locked .w-list .del { display: none; }
+
+  /* 穿透点击指示 */
+  .widget-ui.click-through .w-title { color: #ffb02e; }
+
+  .w-add {
+    display: flex;
+    gap: 6px;
+    padding: 0 10px 8px;
+    flex-shrink: 0;
+  }
+  .w-add input {
+    flex: 1;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.06);
+    color: #e8eaf1;
+    font-size: 14px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    outline: none;
+    transition: border-color .18s;
+  }
+  .w-add input::placeholder { color: rgba(205,210,224,0.5); }
+  .w-add input:focus { border-color: #6d7bff; }
+  .w-add .add-btn { padding: 0 14px; font-size: 16px; border-radius: 10px; }
+
+  .w-list { list-style: none; flex: 1; overflow-y: auto; padding: 2px 8px 8px; }
+  .w-list::-webkit-scrollbar { width: 8px; }
+  .w-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+
+  .w-list .item { padding: 8px 10px; border-radius: 10px; border: none; }
+  .w-list .item:hover { background: rgba(255,255,255,0.08); border-color: transparent; transform: none; }
+  .w-list .item .text { color: #e8eaf1; font-size: 14px; }
+  .w-list .item.done .text { color: rgba(255,255,255,0.4); text-decoration-color: rgba(255,255,255,0.35); }
+  .w-list .check { border-color: rgba(255,255,255,0.35); }
+  .w-list .item.done .check { background: #6d7bff; border-color: #6d7bff; }
+  .w-list .prio.p0 { border-color: rgba(255,255,255,0.35); }
+  .w-list .del { color: rgba(255,255,255,0.45); }
+  .w-list .del:hover { background: rgba(255,91,91,0.25); color: #ff6b6b; }
+
+  .w-empty {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    color: rgba(205,210,224,0.55);
+    font-size: 13px;
+  }
+
+  .w-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px 10px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    font-size: 12px;
+    color: rgba(205,210,224,0.7);
+    flex-shrink: 0;
+  }
+  .w-foot .w-count { flex: 1; }
+  .w-opacity {
+    -webkit-app-region: no-drag;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+  }
+  .w-opacity input[type="range"] {
+    -webkit-app-region: no-drag;
+    width: 76px;
+    accent-color: #6d7bff;
+  }
+
+  /* ---------- 设置界面 ---------- */
+  .settings-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    display: grid;
+    place-items: center;
+    background: rgba(10, 12, 18, 0.35);
+    backdrop-filter: blur(4px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .22s;
+  }
+  .settings-overlay.open { opacity: 1; pointer-events: auto; }
+  .settings {
+    width: min(430px, calc(100vw - 40px));
+    max-height: calc(100vh - 60px);
+    overflow-y: auto;
+    background: rgba(255, 255, 255, 0.88);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    backdrop-filter: blur(20px) saturate(140%);
+    border: 1px solid var(--glass-border);
+    border-radius: 18px;
+    box-shadow: var(--glass-shadow), inset 0 1px 0 var(--glass-highlight);
+    padding: 18px 20px;
+    transform: translateY(12px) scale(.98);
+    transition: transform .28s cubic-bezier(.22, 1, .36, 1);
+  }
+  .settings-overlay.open .settings { transform: none; }
+  html[data-theme="dark"] .settings { background: rgba(28, 30, 40, 0.9); }
+  .settings-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .settings-head h2 { font-size: 18px; font-weight: 700; }
+  .set-section { margin-top: 14px; }
+  .set-section h3 { font-size: 13px; color: var(--text-muted); font-weight: 600; margin-bottom: 8px; letter-spacing: .02em; }
+  .set-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+  .set-row label { width: 56px; font-size: 14px; flex-shrink: 0; }
+  .set-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .set-row input[type="checkbox"] { margin-left: auto; width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+  .set-val { width: 44px; text-align: right; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .guide { list-style: none; }
+  .guide li { font-size: 13px; color: var(--text-muted); padding: 4px 0; }
+  .guide b { color: var(--text); font-weight: 600; }
+  .reset-btn {
+    margin-top: 16px;
+    width: 100%;
+    border: 1px solid var(--line);
+    background: var(--input-bg);
+    color: var(--text-muted);
+    font-size: 13px;
+    padding: 9px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: color .15s, background .15s;
+  }
+  .reset-btn:hover { color: var(--danger); background: var(--danger-soft); }
+  .set-input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--line);
+    background: var(--input-bg);
+    color: var(--text);
+    font-size: 13px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    outline: none;
+    transition: border-color .18s;
+  }
+  .set-input:focus { border-color: var(--accent); }
+  .sync-actions { display: flex; gap: 8px; margin-top: 10px; }
+  .sync-actions .save-btn { flex: 1; margin-top: 0; }
+  .save-btn.ghost { background: var(--input-bg); color: var(--text); border: 1px solid var(--line); }
+  .save-btn {
+    margin-top: 10px;
+    width: 100%;
+    border: none;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #fff;
+    font-size: 13px;
+    padding: 9px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: filter .18s;
+  }
+  .save-btn:hover { filter: brightness(1.06); }
+</style>
+</head>
+<body>
+  <div class="bg" aria-hidden="true">
+    <div class="blob b1"></div>
+    <div class="blob b2"></div>
+    <div class="blob b3"></div>
+    <div class="blob b4"></div>
+  </div>
+
+  <div class="titlebar">
+    <button class="tb-btn" id="winMin" title="最小化">—</button>
+    <button class="tb-btn" id="winMax" title="最大化">□</button>
+    <button class="tb-btn tb-close" id="winClose" title="关闭">×</button>
+  </div>
+
+  <div class="island" id="island">
+    <span class="island-dot"></span>
+    <span class="island-body" id="islandBody"></span>
+  </div>
+
+  <!-- 主窗口 UI -->
+  <div class="app">
+    <div class="header">
+      <div>
+        <div class="date" id="date"></div>
+        <h1>待办清单<span class="dot">.</span></h1>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="widgetBtn" title="打开桌贴" style="display:none"></button>
+        <button class="icon-btn" id="settingsBtn" title="设置"></button>
+        <button class="icon-btn" id="themeBtn" title="切换深色模式"></button>
+      </div>
+    </div>
+
+    <div class="progress"><div class="progress-fill" id="progressFill"></div></div>
+
+    <div class="add-row">
+      <input type="text" id="input" placeholder="添加新任务…" maxlength="200">
+      <button class="add-btn" id="addBtn">添加</button>
+    </div>
+
+    <div class="opts">
+      <span class="opt-label">优先级</span>
+      <select id="prioSelect" title="新任务的优先级">
+        <option value="0">无</option>
+        <option value="1">低</option>
+        <option value="2">中</option>
+        <option value="3">高</option>
+      </select>
+      <select id="catSelect" title="新任务的分类"></select>
+      <input type="date" id="dueInput" title="新任务的截止日期（可选）">
+      <input type="datetime-local" id="remindInput" title="提醒时间（可选）">
+    </div>
+
+    <div class="cats" id="cats"></div>
+
+    <div class="tabs">
+      <button class="tab active" data-filter="all">全部</button>
+      <button class="tab" data-filter="active">未完成</button>
+      <button class="tab" data-filter="done">已完成</button>
+    </div>
+
+    <ul class="list" id="list"></ul>
+    <div class="empty" id="empty" style="display:none">
+      <div class="icon">🗒️</div>
+      <div>还没有任务，添加一个吧</div>
+    </div>
+
+    <div class="footer">
+      <span id="count">0 项任务</span>
+      <button class="clear-btn" id="clearBtn">清除已完成</button>
+    </div>
+  </div>
+
+  <!-- 桌贴 UI -->
+  <div class="widget-ui" id="widgetUI">
+    <div class="w-bar">
+      <span class="w-title">待办清单</span>
+      <span class="w-drag"></span>
+      <button class="w-btn" id="wOpenMain" title="打开主窗口"></button>
+      <button class="w-btn active" id="wPin" title="置顶"></button>
+      <button class="w-btn" id="wLock" title="锁定"></button>
+      <button class="w-btn" id="wClose" title="关闭桌贴"></button>
+    </div>
+    <div class="w-add">
+      <input type="text" id="wInput" placeholder="快速添加…" maxlength="200">
+      <button class="add-btn" id="wAdd">＋</button>
+    </div>
+    <ul class="list w-list" id="wList"></ul>
+    <div class="w-empty" id="wEmpty" style="display:none">暂无待办</div>
+    <div class="w-foot">
+      <span class="w-count" id="wCount">0 项待办</span>
+      <span class="w-opacity">
+        透明
+        <input type="range" id="wOpacity" min="15" max="95" value="65">
+      </span>
+    </div>
+  </div>
+
+<!-- 设置界面 -->
+<div class="settings-overlay" id="settingsOverlay">
+  <div class="settings">
+    <div class="settings-head">
+      <h2>设置</h2>
+      <button class="icon-btn" id="settingsClose" title="关闭">×</button>
+    </div>
+    <div class="set-section">
+      <h3>主界面</h3>
+      <div class="set-row"><label>透明度</label><input type="range" id="mainOpacity" min="10" max="90" value="42"><span class="set-val" id="mainOpacityVal">42%</span></div>
+      <div class="set-row"><label>磨砂感</label><input type="range" id="mainBlur" min="0" max="30" value="10"><span class="set-val" id="mainBlurVal">10px</span></div>
+    </div>
+    <div class="set-section">
+      <h3>桌贴</h3>
+      <div class="set-row"><label>透明度</label><input type="range" id="widgetOpacity" min="15" max="95" value="65"><span class="set-val" id="widgetOpacityVal">65%</span></div>
+      <div class="set-row"><label>磨砂感</label><input type="range" id="widgetFrost" min="0" max="50" value="0"><span class="set-val" id="widgetFrostVal">0%</span></div>
+      <div class="set-row"><label>开机自启</label><input type="checkbox" id="autoOpenWidget"></div>
+    </div>
+    <div class="set-section">
+      <h3>提醒</h3>
+      <div class="set-row"><label>提前量</label><input type="number" id="remindLead" class="set-input" min="0" max="720" step="5" value="30"><span class="set-val">分钟</span></div>
+      <div class="set-row"><label>微信提醒</label><input type="password" id="scKey" class="set-input" placeholder="Server酱 SendKey（SCT开头，留空关闭）"></div>
+    </div>
+    <div class="set-section">
+      <h3>总结</h3>
+      <div class="set-row"><label>总结方式</label><select id="aiMode" class="set-input"><option value="auto">自动（有 Key 用 DeepSeek，否则本地）</option><option value="ai">DeepSeek 大模型（需 Key）</option></select></div>
+      <div class="set-row"><label>API Key</label><input type="password" id="aiKey" class="set-input" placeholder="sk-..."></div>
+      <div class="set-row"><label>接口地址</label><input type="text" id="aiBase" class="set-input" placeholder="https://api.deepseek.com"></div>
+      <div class="set-row"><label>模型</label><input type="text" id="aiModel" class="set-input" placeholder="deepseek-chat"></div>
+      <button class="save-btn" id="aiSave">保存 AI 设置</button>
+    </div>
+    <div class="set-section">
+      <h3>云端同步（Gitee）</h3>
+      <div class="set-row"><label>Gitee 用户名</label><input type="text" id="cloudUrl" class="set-input" placeholder="gitee 用户名"></div>
+      <div class="set-row"><label>仓库名</label><input type="text" id="cloudKey" class="set-input" placeholder="私有仓库名"></div>
+      <div class="set-row"><label>访问令牌</label><input type="password" id="cloudSyncKey" class="set-input" placeholder="私人令牌 PAT"></div>
+      <div class="set-row"><label>自动同步</label><input type="checkbox" id="cloudAuto"></div>
+      <div class="sync-actions">
+        <button class="save-btn" id="cloudPush">立即同步</button>
+        <button class="save-btn ghost" id="cloudPull">从云端拉取</button>
+      </div>
+    </div>
+    <div class="set-section">
+      <h3>分类管理</h3>
+      <div class="cat-manager" id="catManager"></div>
+      <button class="cat-add" id="catAdd">＋ 添加分类</button>
+    </div>
+    <div class="set-section">
+      <h3>快捷方式 · 操作指引</h3>
+      <ul class="guide">
+        <li><b>Ctrl+Shift+S</b> 总结选中文字并存入待办（AI / 本地）</li>
+        <li><b>托盘右键</b> →「总结选中文字」 同样触发总结</li>
+        <li><b>Enter</b> 添加任务</li>
+        <li><b>点击圆圈</b> 完成 / 取消</li>
+        <li><b>点击彩色圆点</b> 切换优先级</li>
+        <li><b>点击日期标签</b> 清除截止日期</li>
+        <li><b>分类</b> 添加任务时选分类，点上方分类标签筛选</li>
+        <li><b>提醒时间</b> 设置后到点弹出系统通知，点 ⏰ 标签清除提醒</li>
+        <li><b>拖动顶部</b> 移动窗口 · <b>双击顶部</b> 最大化</li>
+        <li><b>— □ ×</b> 最小化 / 最大化 / 关闭</li>
+        <li><b>齿轮按钮</b> 打开设置</li>
+        <li><b>关闭主窗口</b> 最小化到托盘，托盘可退出</li>
+        <li><b>图钉按钮</b> 打开 / 关闭桌贴</li>
+      </ul>
+    </div>
+    <button class="reset-btn" id="resetSettings">恢复默认设置</button>
+  </div>
+</div>
+
+<script>
+  const KEY = 'todo.items.v2';
+  const KEY_THEME = 'todo.theme.v1';
+  const KEY_WOPACITY = 'todo.widget.opacity.v1';
+  const KEY_CATS = 'todo.categories.v1';
+
+  const IS_WIDGET = new URLSearchParams(location.search).get('widget') === '1';
+
+  const PRIO = [
+    { name: '无优先级' },
+    { name: '低优先级' },
+    { name: '中优先级' },
+    { name: '高优先级' },
+  ];
+
+  const ICONS = {
+    pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>',
+    moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>',
+    sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>',
+    maximize: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>',
+    lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+    unlock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>',
+    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  };
+
+  let items = load();
+  let filter = 'all';
+  let categories = loadCategories();
+  let catFilter = 'all';
+
+  const $ = (s) => document.querySelector(s);
+  const input = $('#input');
+  const list = $('#list');
+  const empty = $('#empty');
+  const count = $('#count');
+  const wList = $('#wList');
+  const wEmpty = $('#wEmpty');
+  const wCount = $('#wCount');
+  const wInput = $('#wInput');
+
+  const WEEK = ['日','一','二','三','四','五','六'];
+
+  function today() {
+    const d = new Date();
+    return `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日 星期${WEEK[d.getDay()]}`;
+  }
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  }
+
+  function save() { localStorage.setItem(KEY, JSON.stringify(items)); scheduleCloudPush(); }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  }
+
+  // ---------- 分类 ----------
+  function defaultCategories() {
+    return [
+      { id: 'work', name: '工作', color: '#5b6cff' },
+      { id: 'life', name: '生活', color: '#2fbf71' },
+      { id: 'study', name: '学习', color: '#f5a623' },
+    ];
+  }
+  function loadCategories() {
+    try {
+      const raw = localStorage.getItem(KEY_CATS);
+      if (raw) return JSON.parse(raw);
+    } catch {}
+    const def = defaultCategories();
+    try { localStorage.setItem(KEY_CATS, JSON.stringify(def)); } catch {}
+    return def;
+  }
+  function saveCategories() { localStorage.setItem(KEY_CATS, JSON.stringify(categories)); scheduleCloudPush(); }
+  function catById(id) { return categories.find(c => c.id === id) || null; }
+
+  function renderCatSelect() {
+    const sel = $('#catSelect');
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">未分类</option>' +
+      categories.map(c => `<option value="${c.id}"${c.id === prev ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+  }
+
+  function renderCatChips() {
+    const box = $('#cats');
+    const chips = [{ id: 'all', name: '全部', color: null }, { id: 'none', name: '未分类', color: null }]
+      .concat(categories.map(c => ({ id: c.id, name: c.name, color: c.color })));
+    box.innerHTML = '';
+    chips.forEach(ch => {
+      const b = document.createElement('button');
+      b.className = 'cat-chip' + (catFilter === ch.id ? ' active' : '');
+      b.innerHTML = (ch.color ? `<span class="dot" style="background:${ch.color}"></span>` : '') + esc(ch.name);
+      b.addEventListener('click', () => { catFilter = ch.id; renderCatChips(); render(); });
+      box.appendChild(b);
+    });
+  }
+
+  function renderCatManager() {
+    const box = $('#catManager');
+    box.innerHTML = '';
+    categories.forEach((c, idx) => {
+      const row = document.createElement('div');
+      row.className = 'cat-row';
+      row.innerHTML = `
+        <input type="color" value="${c.color}">
+        <input type="text" class="set-input" value="${esc(c.name)}" maxlength="12" placeholder="分类名">
+        <button class="cat-del" title="删除分类">×</button>
+      `;
+      row.querySelector('input[type="color"]').addEventListener('input', (e) => { c.color = e.target.value; saveCategories(); renderCatSelect(); renderCatChips(); renderAll(); });
+      row.querySelector('input[type="text"]').addEventListener('input', (e) => { c.name = e.target.value; saveCategories(); renderCatSelect(); renderCatChips(); renderAll(); });
+      row.querySelector('.cat-del').addEventListener('click', () => {
+        categories.splice(idx, 1);
+        items.forEach(it => { if (it.category === c.id) it.category = null; });
+        saveCategories(); save();
+        renderCatManager(); renderCatSelect(); renderCatChips(); renderAll();
+      });
+      box.appendChild(row);
+    });
+  }
+
+  // ---------- 时间自动识别 ----------
+  function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  function ymd(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+
+  const CN_NUM = { '半': 0.5, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+  function parseNum(s) {
+    if (/^\d+$/.test(s)) return +s;
+    if (s === '十') return 10;
+    if (s in CN_NUM) return CN_NUM[s];
+    if (s.length === 2) {
+      if (s[0] === '十') return 10 + (CN_NUM[s[1]] || 0);
+      if (s[1] === '十') return (CN_NUM[s[0]] || 0) * 10;
+    }
+    if (s.length === 3 && s[1] === '十') return (CN_NUM[s[0]] || 0) * 10 + (CN_NUM[s[2]] || 0);
+    return null;
+  }
+
+  function parseDay(text) {
+    const now = new Date(), today = startOfDay(now);
+    let m;
+    // 绝对日期：2026-09-25 / 2026/9/25 / 2026年9月25日 / 9月25日 / 9月25号
+    if ((m = text.match(/(\d{4})\s*[年\-\/]\s*(\d{1,2})\s*[月\-\/]\s*(\d{1,2})\s*[日号]?/)))
+      return new Date(+m[1], +m[2] - 1, +m[3]);
+    if ((m = text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/))) {
+      let d = new Date(now.getFullYear(), +m[1] - 1, +m[2]);
+      if (d < today) d = new Date(now.getFullYear() + 1, +m[1] - 1, +m[2]);
+      return d;
+    }
+    // 相对天
+    const dayWords = { '大后天': 3, '后天': 2, '明天': 1, '今天': 0 };
+    for (const w in dayWords) {
+      if (text.includes(w)) { const d = new Date(today); d.setDate(d.getDate() + dayWords[w]); return d; }
+    }
+    // 星期：周X / 星期X / 礼拜X / 下(下)周X
+    if ((m = text.match(/([下]+)?(?:个)?(?:周|星期|礼拜)([一二三四五六日天])/))) {
+      const week = m[2] === '天' ? 7 : '一二三四五六日'.indexOf(m[2]) + 1;
+      const todayWd = now.getDay() || 7;
+      let diff = week - todayWd + (m[1] ? m[1].length * 7 : 0);
+      if (diff < 0) diff += 7;
+      const d = new Date(today); d.setDate(d.getDate() + diff);
+      return d;
+    }
+    return null;
+  }
+
+  function parseTimeOfDay(text) {
+    let hour = null, minute = 0, m;
+    if ((m = text.match(/(\d{1,2})\s*[:：]\s*(\d{1,2})/))) { hour = +m[1]; minute = +m[2]; }
+    else if ((m = text.match(/(\d{1,2})\s*[点时]\s*(\d{1,2})\s*分?/))) { hour = +m[1]; minute = +m[2]; }
+    else if ((m = text.match(/(\d{1,2})\s*[点时](半)?/))) { hour = +m[1]; minute = m[2] ? 30 : 0; }
+
+    const periods = [['凌晨', 4], ['早上', 7], ['早晨', 7], ['上午', 9], ['中午', 12], ['下午', 14], ['傍晚', 18], ['晚上', 20], ['深夜', 23]];
+    let per = null;
+    for (const p of periods) if (text.includes(p[0])) { per = p; break; }
+
+    if (hour == null && per) hour = per[1];
+    else if (hour != null && per && per[1] >= 12 && hour < 12) hour += 12;
+    if (hour == null) return null;
+    if (hour >= 24) hour = hour % 24;
+    return { hour, minute };
+  }
+
+  function fmtDateTime(ms) {
+    const d = new Date(ms);
+    const diff = Math.round((startOfDay(d) - startOfDay(new Date())) / 86400000);
+    const hm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    const day = diff === 0 ? '今天' : diff === 1 ? '明天' : diff === 2 ? '后天'
+      : (d.getMonth() + 1) + '月' + d.getDate() + '日';
+    return day + ' ' + hm;
+  }
+
+  function parseTime(text) {
+    if (!text) return null;
+    const now = new Date();
+
+    // 相对时长：30分钟后 / 2小时后 / 3天后 / 半小时后 / 十五分钟后
+    // （这类本身就是“多久后提醒”，不做提前量处理）
+    const m = text.match(/([0-9]{1,3}|[半一两二三四五六七八九十]{1,3})\s*(分钟|小时|天|周|礼拜|星期)\s*后/);
+    if (m) {
+      const n = parseNum(m[1]);
+      if (n != null) {
+        const unit = m[2];
+        const ms = unit === '分钟' ? 60000 : unit === '小时' ? 3600000 : unit === '天' ? 86400000 : 604800000;
+        const dt = new Date(now.getTime() + n * ms);
+        return { due: ymd(dt), remindAt: dt.getTime() };
+      }
+    }
+
+    const day = parseDay(text);
+    const tod = parseTimeOfDay(text);
+    if (!day && !tod) return null;
+
+    // 截止时间（完整时刻）
+    let deadline;
+    if (day) {
+      deadline = new Date(day);
+      deadline.setHours(tod ? tod.hour : 9, tod ? tod.minute : 0, 0, 0);
+    } else {
+      // 只给了时刻、没给日期：默认今天；今天的这个时刻已过才顺延到明天
+      deadline = new Date(now);
+      deadline.setHours(tod.hour, tod.minute, 0, 0);
+      if (deadline.getTime() < now.getTime()) deadline.setDate(deadline.getDate() + 1);
+    }
+
+    // 提醒时间 = 截止时间提前「提醒提前量」分钟（设置面板可调）；若截止还没到、但提前量已越过当前，则立即提醒
+    let remindAt = deadline.getTime() - (settings.remindLead || 0) * 60000;
+    if (remindAt < now.getTime() && deadline.getTime() > now.getTime()) remindAt = now.getTime();
+
+    return { due: ymd(deadline), remindAt, deadline: deadline.getTime() };
+  }
+
+  function add(text, priority, due, category, remindAt) {
+    text = (text || '').trim();
+    if (!text) return;
+
+    // 自动识别文本中的时间（仅主窗口；桌贴显式传了 null，不识别）
+    const auto = (due === undefined || remindAt === undefined) ? parseTime(text) : null;
+
+    items.unshift({
+      id: Date.now() + Math.random(),
+      text,
+      done: false,
+      priority: priority === undefined ? +$('#prioSelect').value : +priority,
+      due: due === undefined ? ((auto && auto.due) || $('#dueInput').value || null) : due,
+      category: category === undefined ? ($('#catSelect').value || null) : category,
+      remindAt: remindAt === undefined ? ((auto && auto.remindAt) || readRemind()) : remindAt,
+      reminded: false,
+      createdAt: Date.now(),
+    });
+    save();
+    renderAll();
+    if (auto && auto.remindAt) showIsland('⏰', '已添加，' + fmtDateTime(auto.remindAt) + ' 提醒' + (auto.deadline ? '（' + fmtDateTime(auto.deadline) + ' 截止）' : ''));
+    else showIsland('＋', '已添加');
+  }
+
+  function toggle(id) {
+    const it = items.find(i => i.id === id);
+    if (it) { it.done = !it.done; save(); renderAll(); if (it.done) showIsland('✅', '已完成'); }
+  }
+
+  function remove(id) {
+    items = items.filter(i => i.id !== id);
+    save();
+    renderAll();
+  }
+
+  function clearDone() {
+    items = items.filter(i => !i.done);
+    save();
+    renderAll();
+  }
+
+  function cyclePrio(id) {
+    const it = items.find(i => i.id === id);
+    if (it) { it.priority = (it.priority + 1) % 4; save(); renderAll(); }
+  }
+
+  function clearDue(id) {
+    const it = items.find(i => i.id === id);
+    if (it) { it.due = null; save(); renderAll(); }
+  }
+
+  function startEdit(it, li) {
+    const textEl = li.querySelector('.text');
+    textEl.innerHTML = '';
+    const input = document.createElement('input');
+    input.className = 'edit-input';
+    input.value = it.text;
+    input.maxLength = 200;
+    let cancel = false;
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') input.blur();
+      else if (e.key === 'Escape') { cancel = true; input.blur(); }
+    });
+    input.addEventListener('blur', () => {
+      if (cancel) { renderAll(); return; }
+      const v = input.value.trim();
+      if (v && v !== it.text) { it.text = v; save(); showIsland('✎', '已更新'); }
+      renderAll();
+    });
+    textEl.appendChild(input);
+    input.focus();
+    input.select();
+  }
+
+  function sortItems(arr) {
+    return arr.slice().sort((a, b) => {
+      if (a.done !== b.done) return a.done ? 1 : -1;
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return b.createdAt - a.createdAt;
+    });
+  }
+
+  function visible() {
+    let arr = items;
+    if (catFilter !== 'all') {
+      arr = arr.filter(i => (i.category || null) === (catFilter === 'none' ? null : catFilter));
+    }
+    if (filter === 'active') return sortItems(arr.filter(i => !i.done));
+    if (filter === 'done') return sortItems(arr.filter(i => i.done));
+    return sortItems(arr);
+  }
+
+  function dueInfo(ds) {
+    if (!ds) return null;
+    const [y, m, d] = ds.split('-').map(Number);
+    const due = new Date(y, m - 1, d);
+    const now = new Date(); now.setHours(0,0,0,0);
+    const diff = Math.round((due - now) / 86400000);
+    if (diff < 0) return { cls: 'overdue', label: `${m}月${d}日 · 已过期` };
+    if (diff === 0) return { cls: 'today', label: '今天' };
+    if (diff <= 3) return { cls: 'soon', label: `${m}月${d}日` };
+    return { cls: 'far', label: `${m}月${d}日` };
+  }
+
+  function checkSVG() {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5"
+             stroke-linecap="round" stroke-linejoin="round">
+             <polyline points="4 12.5 10 18.5 20 6.5"></polyline></svg>`;
+  }
+
+  function render() {
+    const vs = visible();
+    list.innerHTML = '';
+
+    vs.forEach(it => {
+      const li = document.createElement('li');
+      li.className = 'item' + (it.done ? ' done' : '');
+      li.innerHTML = `
+        <span class="check">${checkSVG()}</span>
+        <span class="prio p${it.priority}" title="${PRIO[it.priority].name}（点击切换）"></span>
+        <span class="tag" style="display:none"></span>
+        <span class="text"></span>
+        <span class="rem" style="display:none"></span>
+        <span class="due" style="display:none"></span>
+        <button class="edit" title="编辑">✎</button>
+        <button class="del" title="删除">×</button>
+      `;
+      const textEl = li.querySelector('.text');
+      textEl.textContent = it.text;
+      if (it.note) {
+        const noteEl = document.createElement('span');
+        noteEl.className = 'note';
+        noteEl.textContent = it.note;
+        textEl.appendChild(noteEl);
+      }
+
+      const cat = catById(it.category);
+      if (cat) {
+        const tagEl = li.querySelector('.tag');
+        tagEl.textContent = cat.name;
+        tagEl.style.background = cat.color;
+        tagEl.style.display = '';
+      }
+      if (it.remindAt && !it.done) {
+        const remEl = li.querySelector('.rem');
+        const d = new Date(it.remindAt);
+        remEl.textContent = '⏰ ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+        remEl.style.display = '';
+        remEl.title = it.remindAt <= Date.now() ? '提醒已到点（点击清除）' : '提醒时间（点击清除）';
+        remEl.addEventListener('click', (e) => { e.stopPropagation(); it.remindAt = null; it.reminded = false; save(); renderAll(); });
+      }
+
+      const dueEl = li.querySelector('.due');
+      const info = dueInfo(it.due);
+      if (info) {
+        dueEl.textContent = info.label;
+        dueEl.className = 'due ' + info.cls;
+        dueEl.title = '点击清除截止日期';
+        dueEl.style.display = '';
+        dueEl.addEventListener('click', (e) => { e.stopPropagation(); clearDue(it.id); });
+      }
+
+      li.querySelector('.check').addEventListener('click', (e) => { e.stopPropagation(); toggle(it.id); });
+      li.addEventListener('click', () => toggle(it.id));
+      li.querySelector('.prio').addEventListener('click', (e) => { e.stopPropagation(); cyclePrio(it.id); });
+      li.querySelector('.edit').addEventListener('click', (e) => { e.stopPropagation(); startEdit(it, li); });
+      li.querySelector('.del').addEventListener('click', (e) => { e.stopPropagation(); remove(it.id); });
+
+      list.appendChild(li);
+    });
+
+    empty.style.display = vs.length ? 'none' : 'block';
+    const active = items.filter(i => !i.done).length;
+    count.textContent = `${active} 项未完成`;
+    $('#clearBtn').style.visibility = items.some(i => i.done) ? 'visible' : 'hidden';
+    const total = items.length;
+    $('#progressFill').style.width = (total ? (total - active) / total * 100 : 0) + '%';
+  }
+
+  function renderWidget() {
+    const active = sortItems(items.filter(i => !i.done));
+    wList.innerHTML = '';
+
+    active.forEach(it => {
+      const li = document.createElement('li');
+      li.className = 'item';
+      const cat = catById(it.category);
+      li.innerHTML = `
+        <span class="check">${checkSVG()}</span>
+        <span class="prio p${it.priority}" title="${PRIO[it.priority].name}"></span>
+        ${cat ? `<span class="cat-dot" style="background:${cat.color}"></span>` : ''}
+        <span class="text"></span>
+        <button class="del" title="删除">×</button>
+      `;
+      li.querySelector('.text').textContent = it.text;
+      li.querySelector('.check').addEventListener('click', (e) => { e.stopPropagation(); toggle(it.id); });
+      li.addEventListener('click', () => toggle(it.id));
+      li.querySelector('.prio').addEventListener('click', (e) => { e.stopPropagation(); cyclePrio(it.id); });
+      li.querySelector('.del').addEventListener('click', (e) => { e.stopPropagation(); remove(it.id); });
+      wList.appendChild(li);
+    });
+
+    wEmpty.style.display = active.length ? 'none' : 'grid';
+    wCount.textContent = `${active.length} 项待办`;
+  }
+
+  function renderAll() { render(); renderWidget(); }
+
+  // 主题
+  const themeBtn = $('#themeBtn');
+  let theme = localStorage.getItem(KEY_THEME)
+    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  function applyTheme() {
+    document.documentElement.setAttribute('data-theme', theme);
+    themeBtn.innerHTML = theme === 'dark' ? ICONS.sun : ICONS.moon;
+    if (window.api && window.api.setTheme) window.api.setTheme(theme);   // 同步主进程 nativeTheme，让原生下拉弹层跟着变深色
+  }
+  themeBtn.addEventListener('click', () => {
+    theme = theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(KEY_THEME, theme);
+    applyTheme();
+  });
+  applyTheme();
+
+  // ---------- 设置 ----------
+  const KEY_SETTINGS = 'todo.settings.v1';
+  const SETTINGS_DEFAULTS = { mainOpacity: 0.42, mainBlur: 10, widgetOpacity: 0.65, widgetFrost: 0, remindLead: 30, scKey: '' };
+  function loadSettings() {
+    let s = {};
+    try { s = JSON.parse(localStorage.getItem(KEY_SETTINGS)) || {}; } catch {}
+    if (s.widgetOpacity == null) {
+      const old = parseFloat(localStorage.getItem(KEY_WOPACITY));
+      s.widgetOpacity = isNaN(old) ? SETTINGS_DEFAULTS.widgetOpacity : old;
+    }
+    return Object.assign({}, SETTINGS_DEFAULTS, s);
+  }
+  function saveSettings() { localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings)); }
+  let settings = loadSettings();
+  function applySettings() {
+    const root = document.documentElement;
+    root.style.setProperty('--glass-alpha', settings.mainOpacity);
+    root.style.setProperty('--app-blur', settings.mainBlur + 'px');
+    const w = document.querySelector('.widget-ui');
+    w.style.setProperty('--w-alpha', settings.widgetOpacity);
+    w.style.setProperty('--w-frost', settings.widgetFrost);
+  }
+  function syncSettingsUI() {
+    const mo = Math.round(settings.mainOpacity * 100);
+    $('#mainOpacity').value = mo;
+    $('#mainOpacityVal').textContent = mo + '%';
+    $('#mainBlur').value = settings.mainBlur;
+    $('#mainBlurVal').textContent = settings.mainBlur + 'px';
+    const wo = Math.round(settings.widgetOpacity * 100);
+    $('#widgetOpacity').value = wo;
+    $('#widgetOpacityVal').textContent = wo + '%';
+    $('#wOpacity').value = wo;
+    const wf = Math.round(settings.widgetFrost * 100);
+    $('#widgetFrost').value = wf;
+    $('#widgetFrostVal').textContent = wf + '%';
+    $('#remindLead').value = settings.remindLead;
+    $('#scKey').value = settings.scKey || '';
+  }
+  function resetSettings() {
+    settings = Object.assign({}, SETTINGS_DEFAULTS);
+    saveSettings();
+    applySettings();
+    syncSettingsUI();
+  }
+
+  // 事件（主窗口）
+  $('#addBtn').addEventListener('click', () => { add(input.value); input.value = ''; $('#remindInput').value = ''; });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { add(input.value); input.value = ''; $('#remindInput').value = ''; } });
+
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      filter = tab.dataset.filter;
+      render();
+    });
+  });
+
+  $('#clearBtn').addEventListener('click', clearDone);
+
+  // 事件（桌贴）
+  $('#wAdd').addEventListener('click', () => { add(wInput.value, 0, null, null, null); wInput.value = ''; });
+  wInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { add(wInput.value, 0, null, null, null); wInput.value = ''; } });
+
+  const wOpacity = $('#wOpacity');
+  wOpacity.value = Math.round(settings.widgetOpacity * 100);
+  wOpacity.addEventListener('input', () => {
+    settings.widgetOpacity = wOpacity.value / 100;
+    saveSettings();
+    applySettings();
+  });
+
+  $('#wPin').addEventListener('click', () => {
+    const btn = $('#wPin');
+    const next = !btn.classList.contains('active');
+    btn.classList.toggle('active', next);
+    if (window.api) window.api.widgetTogglePin();
+  });
+  $('#wClose').addEventListener('click', () => { if (window.api) window.api.widgetClose(); });
+  $('#wOpenMain').addEventListener('click', () => { if (window.api) window.api.widgetOpenMain(); });
+
+  // 图标初始化
+  $('#widgetBtn').innerHTML = ICONS.pin;
+  $('#wOpenMain').innerHTML = ICONS.maximize;
+  $('#wPin').innerHTML = ICONS.pin;
+  $('#wClose').innerHTML = ICONS.close;
+
+  // 桌贴锁定：锁定后只留标题 + 锁图标 + 列表（记住上次状态）
+  const KEY_WLOCKED = 'todo.widget.locked.v1';
+  let locked = localStorage.getItem(KEY_WLOCKED) === '1';
+  const wLockBtn = $('#wLock');
+  function applyLock() {
+    document.getElementById('widgetUI').classList.toggle('locked', locked);
+    wLockBtn.innerHTML = locked ? ICONS.lock : ICONS.unlock;
+    wLockBtn.title = locked ? '解锁' : '锁定';
+    localStorage.setItem(KEY_WLOCKED, locked ? '1' : '0');
+    if (window.api) window.api.widgetSetLocked(locked);
+  }
+  wLockBtn.addEventListener('click', () => { locked = !locked; applyLock(); });
+  applyLock();
+
+  if (window.api) {
+    $('#widgetBtn').style.display = '';
+    $('#widgetBtn').addEventListener('click', () => window.api.toggleWidget());
+    window.api.onWidgetState((s) => {
+      $('#wPin').classList.toggle('active', !!s.pinned);
+      const ct = !!s.clickThrough;
+      document.getElementById('widgetUI').classList.toggle('click-through', ct);
+      document.querySelector('.w-title').textContent = ct ? '待办清单 · 穿透中' : '待办清单';
+    });
+  }
+
+  // 跨窗口同步
+  window.addEventListener('storage', (e) => {
+    if (e.key === KEY) { items = load(); renderAll(); }
+    else if (e.key === KEY_SETTINGS) { settings = loadSettings(); applySettings(); syncSettingsUI(); }
+    else if (e.key === KEY_CATS) { categories = loadCategories(); renderCatSelect(); renderCatChips(); renderAll(); }
+  });
+
+  if (IS_WIDGET) document.body.classList.add('widget');
+
+  // 分类初始化
+  renderCatSelect();
+  renderCatChips();
+  renderCatManager();
+  $('#catAdd').addEventListener('click', () => {
+    categories.push({ id: 'c' + Date.now(), name: '新分类', color: '#5b6cff' });
+    saveCategories();
+    renderCatManager();
+    renderCatSelect();
+    renderCatChips();
+    renderAll();
+  });
+
+  $('#date').textContent = today();
+  renderAll();
+
+  // ---------- 灵动岛提醒 ----------
+  let islandTimer = null;
+  function showIsland(icon, text, hold) {
+    if (IS_WIDGET) return;
+    const body = $('#islandBody');
+    body.innerHTML = '<span class="ic"></span><span class="txt"></span>';
+    body.querySelector('.ic').textContent = icon;
+    body.querySelector('.txt').textContent = text;
+    $('#island').classList.add('show');
+    clearTimeout(islandTimer);
+    islandTimer = setTimeout(() => $('#island').classList.remove('show'), hold || 3000);
+  }
+  function remindDue() {
+    const due = items.filter(i => !i.done && i.due && ['today', 'overdue'].includes(dueInfo(i.due).cls));
+    if (!due.length) return;
+    const over = due.filter(i => dueInfo(i.due).cls === 'overdue').length;
+    showIsland('⏰', over ? (due.length + ' 项待办已到期/今天') : (due.length + ' 项待办今天到期'), 4600);
+  }
+  if (!IS_WIDGET) remindDue();
+
+  function readRemind() {
+    const v = $('#remindInput').value;
+    return v ? new Date(v).getTime() : null;
+  }
+  function checkReminders() {
+    const now = Date.now();
+    let fired = false;
+    items.forEach(it => {
+      if (!it.done && it.remindAt && it.remindAt <= now && !it.reminded) {
+        it.reminded = true;
+        fired = true;
+        if (window.api && window.api.notify) window.api.notify('待办提醒', it.text);
+        if (window.api && window.api.scPush && settings.scKey) {
+          window.api.scPush(settings.scKey, '待办提醒', it.text + (it.due ? '（截止 ' + it.due + '）' : ''));
+        }
+        showIsland('⏰', '提醒：' + it.text, 5000);
+      }
+    });
+    if (fired) { save(); renderAll(); }
+  }
+  if (!IS_WIDGET) {
+    checkReminders();
+    setInterval(checkReminders, 20000);
+  }
+
+  // ---------- 窗口控制（无边框） ----------
+  if (window.api) {
+    $('#winMin').addEventListener('click', () => window.api.minimize());
+    $('#winMax').addEventListener('click', () => window.api.toggleMaximize());
+    $('#winClose').addEventListener('click', () => window.api.close());
+    window.api.onMaximizeChange((max) => {
+      $('#winMax').textContent = max ? '❐' : '□';
+      $('#winMax').title = max ? '还原' : '最大化';
+    });
+  }
+  document.querySelector('.titlebar').addEventListener('dblclick', (e) => {
+    if (e.target.closest('.tb-btn')) return;
+    if (window.api) window.api.toggleMaximize();
+  });
+
+  // ---------- 设置界面 ----------
+  $('#settingsBtn').innerHTML = ICONS.gear;
+  const settingsOverlay = $('#settingsOverlay');
+  $('#settingsBtn').addEventListener('click', () => { settingsOverlay.classList.add('open'); loadAutoOpenUI(); loadCloudUI(); });
+  $('#settingsClose').addEventListener('click', () => settingsOverlay.classList.remove('open'));
+  settingsOverlay.addEventListener('click', (e) => { if (e.target === settingsOverlay) settingsOverlay.classList.remove('open'); });
+  $('#mainOpacity').addEventListener('input', (e) => { settings.mainOpacity = e.target.value / 100; saveSettings(); applySettings(); syncSettingsUI(); });
+  $('#mainBlur').addEventListener('input', (e) => { settings.mainBlur = +e.target.value; saveSettings(); applySettings(); syncSettingsUI(); });
+  $('#widgetOpacity').addEventListener('input', (e) => { settings.widgetOpacity = e.target.value / 100; saveSettings(); applySettings(); syncSettingsUI(); });
+  $('#widgetFrost').addEventListener('input', (e) => { settings.widgetFrost = e.target.value / 100; saveSettings(); applySettings(); syncSettingsUI(); });
+  $('#remindLead').addEventListener('change', () => {
+    let v = parseInt($('#remindLead').value, 10);
+    if (isNaN(v)) v = 30;
+    v = Math.max(0, Math.min(720, v));
+    settings.remindLead = v;
+    saveSettings();
+    syncSettingsUI();
+  });
+  $('#scKey').addEventListener('change', () => {
+    settings.scKey = $('#scKey').value.trim();
+    saveSettings();
+  });
+  $('#resetSettings').addEventListener('click', resetSettings);
+
+  applySettings();
+  syncSettingsUI();
+
+  // ---------- AI 总结 ----------
+  function addSummarizedItem(r) {
+    // 从总结文本里解析时间，与手动添加一致：识别到时间才写入 due / remindAt
+    const auto = parseTime(r.summary);
+    items.unshift({
+      id: Date.now() + Math.random(),
+      text: r.summary,
+      done: false,
+      priority: 0,
+      due: (auto && auto.due) || null,
+      category: null,
+      remindAt: (auto && auto.remindAt) || null,
+      reminded: false,
+      createdAt: Date.now(),
+      note: '记录于 ' + r.capturedAt + ' · 原文 ' + r.originalLen + ' 字' + (r.offline ? ' · 离线' : ''),
+    });
+    save();
+    renderAll();
+    if (auto && auto.remindAt) showIsland('⏰', '已总结，' + fmtDateTime(auto.remindAt) + ' 提醒' + (auto.deadline ? '（' + fmtDateTime(auto.deadline) + ' 截止）' : ''));
+    else showIsland('✅', '已总结并加入待办');
+  }
+  async function loadAIConfigUI() {
+    if (!window.api || !window.api.getAIConfig) return;
+    try {
+      const c = await window.api.getAIConfig();
+      $('#aiKey').value = c.apiKey || '';
+      $('#aiBase').value = c.baseURL || '';
+      $('#aiModel').value = c.model || '';
+      $('#aiMode').value = (c.mode && c.mode !== 'offline') ? c.mode : 'auto';
+    } catch {}
+  }
+  $('#aiSave').addEventListener('click', () => {
+    if (!window.api || !window.api.setAIConfig) return;
+    window.api.setAIConfig({
+      apiKey: $('#aiKey').value.trim(),
+      baseURL: $('#aiBase').value.trim() || 'https://api.deepseek.com',
+      model: $('#aiModel').value.trim() || 'deepseek-chat',
+      mode: $('#aiMode').value,
+    });
+    showIsland('✅', 'AI 设置已保存');
+    settingsOverlay.classList.remove('open');
+  });
+  if (window.api) {
+    window.api.onSummarizeStart(() => showIsland('🤖', '正在总结选中文字…', 12000));
+    window.api.onSummarizeResult((r) => {
+      addSummarizedItem(r);
+    });
+    window.api.onSummarizeError((msg) => showIsland('⚠️', msg, 5000));
+  }
+  loadAIConfigUI();
+
+  // 开机自动打开桌贴
+  async function loadAutoOpenUI() {
+    if (!window.api || !window.api.getAutoOpenWidget) return;
+    try { $('#autoOpenWidget').checked = await window.api.getAutoOpenWidget(); } catch {}
+  }
+  $('#autoOpenWidget').addEventListener('change', (e) => {
+    if (window.api) window.api.setAutoOpenWidget(e.target.checked);
+  });
+  loadAutoOpenUI();
+
+  // ---------- 云端同步（Gitee） ----------
+  const KEY_CLOUD = 'todo.gitee.v1';
+  const GITEE_PATH = 'todo-sync.json';
+  const CLOUD_DEFAULTS = { owner: '', repo: '', token: '', autoSync: false };
+  function loadCloud() {
+    let c = {};
+    try { c = JSON.parse(localStorage.getItem(KEY_CLOUD)) || {}; } catch {}
+    return Object.assign({}, CLOUD_DEFAULTS, c);
+  }
+  function saveCloud() { localStorage.setItem(KEY_CLOUD, JSON.stringify(cloud)); }
+  let cloud = loadCloud();
+  let suppressPush = false;
+  let pushTimer = null;
+
+  function cloudReady() { return !!(cloud.owner && cloud.repo && cloud.token); }
+  function giteeApi(verb, body) {
+    const url = 'https://gitee.com/api/v5/repos/' + encodeURIComponent(cloud.owner) +
+      '/' + encodeURIComponent(cloud.repo) + '/contents/' + GITEE_PATH +
+      '?access_token=' + encodeURIComponent(cloud.token);
+    const opts = { method: verb };
+    if (body) { opts.headers = { 'Content-Type': 'application/json' }; opts.body = JSON.stringify(body); }
+    return fetch(url, opts);
+  }
+  function b64encode(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+  function b64decode(b64) {
+    const bin = atob(String(b64).replace(/\s/g, ''));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  function scheduleCloudPush() {
+    if (!cloud.autoSync || !cloudReady() || suppressPush) return;
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => pushCloud(false), 2000);
+  }
+
+  async function pushCloud(showFeedback) {
+    if (!cloudReady()) { showIsland('⚠️', '请先在设置里填写 Gitee 用户名/仓库/令牌', 5000); return; }
+    try {
+      const content = b64encode(JSON.stringify({ items, categories, updatedAt: Date.now() }));
+      let sha = null;
+      const head = await giteeApi('GET');
+      if (head.ok) { const j = await head.json(); if (j && !Array.isArray(j) && j.sha) sha = j.sha; }
+      const body = { content, message: 'sync ' + new Date().toLocaleString('zh-CN') };
+      if (sha) body.sha = sha;
+      const res = await giteeApi(sha ? 'PUT' : 'POST', body);
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error('HTTP ' + res.status + (e.message ? ' ' + e.message : ''));
+      }
+      if (showFeedback) showIsland('☁️', '已同步到 Gitee');
+    } catch (err) {
+      showIsland('⚠️', '云端同步失败：' + (err && err.message ? err.message : err), 5000);
+    }
+  }
+
+  async function pullCloud() {
+    if (!cloudReady()) { showIsland('⚠️', '请先在设置里填写 Gitee 用户名/仓库/令牌', 5000); return; }
+    try {
+      const res = await giteeApi('GET');
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error('HTTP ' + res.status + (e.message ? ' ' + e.message : ''));
+      }
+      const j = await res.json();
+      if (!j || Array.isArray(j) || !j.content) { showIsland('⚠️', '云端还没有数据', 5000); return; }
+      const d = JSON.parse(b64decode(j.content));
+      if (!d || !Array.isArray(d.items)) { showIsland('⚠️', '云端数据格式异常', 5000); return; }
+      if (!confirm('用云端数据覆盖本地？\n云端待办 ' + d.items.length + ' 项，本地 ' + items.length + ' 项')) return;
+      suppressPush = true;
+      items = d.items;
+      if (Array.isArray(d.categories) && d.categories.length) categories = d.categories;
+      save();
+      saveCategories();
+      renderAll();
+      renderCatSelect();
+      renderCatChips();
+      suppressPush = false;
+      showIsland('✅', '已从云端拉取');
+    } catch (err) {
+      showIsland('⚠️', '云端拉取失败：' + (err && err.message ? err.message : err), 5000);
+    }
+  }
+
+  function loadCloudUI() {
+    $('#cloudUrl').value = cloud.owner || '';
+    $('#cloudKey').value = cloud.repo || '';
+    $('#cloudSyncKey').value = cloud.token || '';
+    $('#cloudAuto').checked = !!cloud.autoSync;
+  }
+  function saveCloudFromUI() {
+    cloud.owner = $('#cloudUrl').value.trim();
+    cloud.repo = $('#cloudKey').value.trim();
+    cloud.token = $('#cloudSyncKey').value.trim();
+    cloud.autoSync = $('#cloudAuto').checked;
+    saveCloud();
+  }
+  ['#cloudUrl', '#cloudKey', '#cloudSyncKey'].forEach(sel => {
+    $(sel).addEventListener('change', saveCloudFromUI);
+  });
+  $('#cloudAuto').addEventListener('change', saveCloudFromUI);
+  $('#cloudPush').addEventListener('click', () => { saveCloudFromUI(); pushCloud(true); });
+  $('#cloudPull').addEventListener('click', () => { saveCloudFromUI(); pullCloud(); });
+</script>
+</body>
+</html>

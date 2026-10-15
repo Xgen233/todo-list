@@ -1,0 +1,14 @@
+# 依赖
+node_modules/
+
+# 构建产物 / 安装包
+dist/
+todo-list/
+*.blockmap
+
+# 日志与系统文件
+*.log
+npm-debug.log*
+Thumbs.db
+desktop.ini
+.DS_Store

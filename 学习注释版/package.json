@@ -1,0 +1,62 @@
+{
+  // 包名（npm 里的标识符，只能小写字母/数字/连字符）
+  "name": "todo-list",
+  // 版本号，遵循「主版本.次版本.修订」语义化版本
+  // 打包出来的安装包名会带上这个版本（如「待办清单 Setup 1.2.0.exe」）
+  "version": "1.2.0",
+  // 一句话描述
+  "description": "简洁好看的待办清单",
+  // ★ Electron 启动入口：Electron 运行时会先执行这个文件（主进程）
+  "main": "main.js",
+  // npm 脚本：`npm start` / `npm run build` 的别名
+  "scripts": {
+    // 开发运行：`electron .` 表示「用 electron 运行当前目录」
+    "start": "electron .",
+    // 打包成 Windows 安装包（.exe），走 electron-builder
+    "build": "electron-builder --win"
+  },
+  "author": "qq298",
+  "license": "MIT",
+  // 开发依赖：只在开发/打包时用，不会打进最终安装包
+  "devDependencies": {
+    // Electron 运行时本体（Chromium + Node）
+    "electron": "^31.7.7",
+    // 打包工具，把应用 + Electron 一起打成 .exe 安装包
+    "electron-builder": "^24.13.3"
+  },
+  // electron-builder 的打包配置（它只认这个 "build" 字段）
+  "build": {
+    // 应用唯一 ID（反向域名风格），用于系统里区分不同应用
+    "appId": "com.qq298.todo",
+    // 安装后显示的应用名
+    "productName": "待办清单",
+    // ★ 指定 Electron 本体的路径。
+    // 正常情况不需要写这个，这里是因为国内下载 Electron 慢，用镜像手动放了 dist，
+    // 让 electron-builder 直接用它，跳过联网下载（见「Electron 打包国内镜像」经验）
+    "electronDist": "node_modules/electron/dist",
+    // 打包进安装包的「白名单」文件：只带这 4 个，其它（node_modules 等）都不带
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "icon.ico"
+    ],
+    // Windows 平台配置
+    "win": {
+      // 目标格式：NSIS 安装包（.exe 向导式安装）
+      "target": "nsis",
+      // 应用图标
+      "icon": "icon.ico"
+    },
+    // NSIS 安装器细节
+    "nsis": {
+      // 非一键安装：用户可以选「安装到哪」
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      // 装完在桌面建快捷方式
+      "createDesktopShortcut": true,
+      // 快捷方式显示名
+      "shortcutName": "待办清单"
+    }
+  }
+}
